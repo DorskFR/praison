@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="content"
+     hx-get="/month/{{ year }}/{{ month }}/content"
+     hx-trigger="every 600s"
+     hx-swap="innerHTML">
+  {% include "_content.html" %}
+</div>
+{% endblock %}

@@ -1,0 +1,18 @@
+services:
+  praison:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      PRAISE_URL: ${PRAISE_URL:-praise.pafin.com}
+      PRAISE_EMAIL: ${PRAISE_EMAIL}
+      PRAISE_PASSWORD: ${PRAISE_PASSWORD}
+      PRAISE_HOURS_PER_DAY: ${PRAISE_HOURS_PER_DAY:-8}
+      PRAISON_WFH_HOURS_PER_BUSINESS_DAY: ${PRAISON_WFH_HOURS_PER_BUSINESS_DAY:-1.5}
+    volumes:
+      # planning.db + cached praise session live under /data/praison
+      - praison-data:/data
+    restart: unless-stopped
+
+volumes:
+  praison-data:

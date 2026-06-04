@@ -1,0 +1,147 @@
+{
+  "timezone": "Asia/Tokyo",
+  "days": [
+    {
+      "date": "2026-06-01",
+      "dayType": "working_day",
+      "actualWorkMinutes": 480,
+      "breakMinutes": 60,
+      "clockIn": "2026-06-01T00:00:00Z",
+      "clockOut": "2026-06-01T09:00:00Z",
+      "leaveType": null,
+      "leaveUnit": null,
+      "leaveCategory": null,
+      "sessions": [
+        {
+          "clockIn": "2026-06-01T00:00:00Z",
+          "clockOut": "2026-06-01T09:00:00Z",
+          "actualWorkMinutes": 480,
+          "breakMinutes": 60,
+          "breakPeriods": [{"minutes": 60}],
+          "locationId": "loc-office",
+          "locationName": "HF Bldg."
+        }
+      ]
+    },
+    {
+      "date": "2026-06-02",
+      "dayType": "working_day",
+      "actualWorkMinutes": 390,
+      "breakMinutes": 60,
+      "clockIn": "2026-06-02T00:00:00Z",
+      "clockOut": "2026-06-02T08:30:00Z",
+      "leaveType": null,
+      "leaveUnit": null,
+      "leaveCategory": null,
+      "sessions": [
+        {
+          "clockIn": "2026-06-02T00:00:00Z",
+          "clockOut": "2026-06-02T07:00:00Z",
+          "actualWorkMinutes": 360,
+          "breakMinutes": 60,
+          "breakPeriods": [{"minutes": 60}],
+          "locationId": "loc-office",
+          "locationName": "HF Bldg."
+        },
+        {
+          "clockIn": "2026-06-02T08:00:00Z",
+          "clockOut": "2026-06-02T08:30:00Z",
+          "actualWorkMinutes": 30,
+          "breakMinutes": 0,
+          "breakPeriods": [],
+          "locationId": "loc-remote",
+          "locationName": "Remote"
+        }
+      ]
+    },
+    {
+      "date": "2026-06-03",
+      "dayType": "working_day",
+      "actualWorkMinutes": null,
+      "breakMinutes": null,
+      "clockIn": "2026-06-03T00:00:00Z",
+      "clockOut": null,
+      "leaveType": null,
+      "leaveUnit": null,
+      "leaveCategory": null,
+      "sessions": [
+        {
+          "clockIn": "2026-06-03T00:00:00Z",
+          "clockOut": null,
+          "actualWorkMinutes": null,
+          "breakMinutes": null,
+          "breakPeriods": [],
+          "locationId": "loc-unknown",
+          "locationName": "Work From Home"
+        }
+      ]
+    },
+    {
+      "date": "2026-06-04",
+      "dayType": "working_day",
+      "actualWorkMinutes": null,
+      "breakMinutes": null,
+      "clockIn": null,
+      "clockOut": null,
+      "leaveType": "Annual Paid Leave",
+      "leaveUnit": "full_day",
+      "leaveCategory": "paid",
+      "sessions": []
+    },
+    {
+      "date": "2026-06-05",
+      "dayType": "working_day",
+      "actualWorkMinutes": 240,
+      "breakMinutes": 0,
+      "clockIn": "2026-06-05T04:00:00Z",
+      "clockOut": "2026-06-05T08:00:00Z",
+      "leaveType": "Annual Paid Leave",
+      "leaveUnit": "half_day_am",
+      "leaveCategory": "paid",
+      "sessions": [
+        {
+          "clockIn": "2026-06-05T04:00:00Z",
+          "clockOut": "2026-06-05T08:00:00Z",
+          "actualWorkMinutes": 240,
+          "breakMinutes": 0,
+          "breakPeriods": [],
+          "locationId": "loc-office",
+          "locationName": "HF Bldg."
+        }
+      ]
+    },
+    {
+      "date": "2026-06-06",
+      "dayType": "scheduled_rest_day",
+      "actualWorkMinutes": null,
+      "breakMinutes": null,
+      "clockIn": null,
+      "clockOut": null,
+      "leaveType": null,
+      "leaveUnit": null,
+      "leaveCategory": null,
+      "sessions": []
+    },
+    {
+      "date": "2026-06-08",
+      "dayType": "working_day",
+      "actualWorkMinutes": null,
+      "breakMinutes": null,
+      "clockIn": null,
+      "clockOut": null,
+      "leaveType": "Unpaid Leave",
+      "leaveUnit": "full_day",
+      "leaveCategory": "unpaid",
+      "sessions": []
+    }
+  ],
+  "summary": {
+    "requiredMinutes": 9840,
+    "requiredOnSiteMinutes": 7860,
+    "remoteBudgetMinutes": 1980,
+    "onSiteMinutes": 1080,
+    "remoteMinutes": 30,
+    "hasRemoteAllowance": true,
+    "leaveDaysCount": 1.5
+  }
+}
