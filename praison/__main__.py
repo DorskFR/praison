@@ -10,9 +10,11 @@ from praison.config import Config
 
 def configure() -> Config:
     """Interactively prompt for configuration and save it."""
-    sys.stdout.write("Praise URL [praise.pafin.com]: ")
-    sys.stdout.flush()
-    url = input().strip() or "praise.pafin.com"
+    url = ""
+    while not url:
+        sys.stdout.write("Praise URL: ")
+        sys.stdout.flush()
+        url = input().strip()
     sys.stdout.write("Praise email: ")
     sys.stdout.flush()
     email = input().strip()

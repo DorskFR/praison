@@ -4,15 +4,32 @@ services:
     ports:
       - "8000:8000"
     environment:
-      PRAISE_URL: ${PRAISE_URL:-praise.pafin.com}
+      PRAISE_URL: ${PRAISE_URL}
       PRAISE_EMAIL: ${PRAISE_EMAIL}
       PRAISE_PASSWORD: ${PRAISE_PASSWORD}
       PRAISE_HOURS_PER_DAY: ${PRAISE_HOURS_PER_DAY:-8}
       PRAISON_WFH_HOURS_PER_BUSINESS_DAY: ${PRAISON_WFH_HOURS_PER_BUSINESS_DAY:-1.5}
+      DB_HOST: database
+      DB_NAME: ${DB_NAME:-praison}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASS: ${DB_PASS:-postgres}
+    depends_on:
+      - database
     volumes:
       # planning.db + cached praise session live under /data/praison
       - praison-data:/data
     restart: unless-stopped
 
+  database:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-praison}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASS:-postgres}
+    volumes:
+      - praison-db:/var/lib/postgresql/data
+    restart: unless-stopped
+
 volumes:
   praison-data:
+  praison-db:

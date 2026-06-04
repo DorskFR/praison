@@ -15,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 
 from praison.calculator import calculate_month_stats, merge_actual_and_planned
 from praison.config import Config
-from praison.database import PlanningDatabase
+from praison.database import PlanningStore, create_database
 from praison.duration import JST, Duration
 from praison.models import DayRecord, DayType, MonthStats, PlannedDay, ServerSummary
 from praison.parser import (
@@ -94,9 +94,9 @@ def _month_nav(year: int, month: int) -> dict[str, Any]:
     return {"prev": (prev_y, prev_m), "next": (next_y, next_m)}
 
 
-def create_app(config: Config, db: PlanningDatabase | None = None) -> FastAPI:
+def create_app(config: Config, db: PlanningStore | None = None) -> FastAPI:
     app = FastAPI(title="praison")
-    db = db or PlanningDatabase()
+    db = db or create_database()
     cache = PraiseCache(config)
     templates = Jinja2Templates(directory=_TEMPLATES_DIR)
     templates.env.filters["dur"] = lambda minutes: str(Duration(int(minutes)))

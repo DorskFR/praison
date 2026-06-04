@@ -19,7 +19,7 @@
           "breakMinutes": 60,
           "breakPeriods": [{"minutes": 60}],
           "locationId": "loc-office",
-          "locationName": "HF Bldg."
+          "locationName": "Office"
         }
       ]
     },
@@ -41,7 +41,7 @@
           "breakMinutes": 60,
           "breakPeriods": [{"minutes": 60}],
           "locationId": "loc-office",
-          "locationName": "HF Bldg."
+          "locationName": "Office"
         },
         {
           "clockIn": "2026-06-02T08:00:00Z",
@@ -106,7 +106,7 @@
           "breakMinutes": 0,
           "breakPeriods": [],
           "locationId": "loc-office",
-          "locationName": "HF Bldg."
+          "locationName": "Office"
         }
       ]
     },

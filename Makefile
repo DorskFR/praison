@@ -1,4 +1,10 @@
 APP ?= praison
+
+# Local, gitignored overrides (registry, tags, credentials…)
+-include .env.local
+
+REPOSITORY_NAME ?= praison
+IMAGE_TAG ?= v$(shell sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
 TESTS ?= ./tests
 PYTHON ?= uv run python
 
@@ -29,7 +35,12 @@ test:
 	$(PYTHON) -m pytest --rootdir=. -o cache_dir=.cache/pytest_cache $(TESTS) -s -x -v $(options)
 
 docker/build:
-	docker build -t praison .
+	docker build --platform linux/amd64 -t $(REPOSITORY_NAME):$(IMAGE_TAG) .
+
+docker/push:
+	docker push $(REPOSITORY_NAME):$(IMAGE_TAG)
+
+docker/release: docker/build docker/push
 
 docker/run:
 	docker compose up --build

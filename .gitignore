@@ -5,3 +5,4 @@ venv/
 *.pyc
 .env
 *.db
+.env.local
