@@ -109,6 +109,15 @@ def _parse_entries(
             )
         )
 
+    # Praise nets only *recorded* breaks out of session actualWorkMinutes; the
+    # mandatory auto-break (1h once the day reaches 6h) shows up solely in the
+    # day-level breakMinutes. Deduct the remainder so totals match the server.
+    if entries and all(s.get("clockOut") for s in sessions):
+        deficit = _day_auto_break_deficit(day, sessions)
+        if deficit > 0:
+            longest = max(entries, key=lambda e: e.duration.minutes)
+            longest.duration = Duration(max(0, longest.duration.minutes - deficit))
+
     # Day with recorded work but no session detail: fall back to one office entry
     if not entries and day.get("actualWorkMinutes"):
         entries.append(
@@ -134,6 +143,20 @@ def _parse_workplace(session: dict[str, Any], location_categories: dict[str, str
     if any(token in name for token in ("remote", "wfh", "home")):
         return WorkplaceType.WFH
     return WorkplaceType.OFFICE
+
+
+def _day_auto_break_deficit(day: dict[str, Any], sessions: list[dict[str, Any]]) -> int:
+    """Auto-break minutes Praise deducts at the day level only.
+
+    The day's `breakMinutes` includes the mandatory auto-break
+    (`autoBreakApplied`), while each session's `actualWorkMinutes` nets out
+    just its recorded breaks. The difference must still be deducted locally.
+    """
+    day_break = day.get("breakMinutes")
+    if day_break is None:
+        return 0
+    recorded = sum(_session_recorded_break_minutes(s) for s in sessions)
+    return max(0, int(day_break) - recorded)
 
 
 def _session_recorded_break_minutes(session: dict[str, Any]) -> int:

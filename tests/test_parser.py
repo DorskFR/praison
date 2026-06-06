@@ -88,6 +88,15 @@ def test_unpaid_leave() -> None:
     assert record.expected_minutes == 480
 
 
+def test_day_level_auto_break_deducted() -> None:
+    # Real Praise shape: session actualWorkMinutes is gross (617, no recorded
+    # break) while the mandatory 1h auto-break only appears in the day-level
+    # breakMinutes. Local total must match Praise's day actualWorkMinutes (557).
+    record = _records()["2026-06-09"]
+    assert record.office_minutes == 557
+    assert record.remote_minutes == 0
+
+
 def test_build_location_categories() -> None:
     locations = [
         {"id": "a", "name": "Office", "category": "on_site"},
