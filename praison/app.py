@@ -1,5 +1,6 @@
 """FastAPI web app: Praise-credential login, then per-user month view."""
 
+import contextlib
 import logging
 import threading
 import time
@@ -62,7 +63,7 @@ class PraiseCache:
         return self._last_error.get(user_id)
 
     def get_month(
-        self, user: User, year: int, month: int, *, force: bool = False
+        self, user: User, password: str, year: int, month: int, *, force: bool = False
     ) -> CachedMonth | None:
         key = (user.id, year, month)
         with self._lock:
@@ -70,7 +71,7 @@ class PraiseCache:
             if cached and not force and time.time() - cached.fetched_at < CACHE_TTL_SECONDS:
                 return cached
         try:
-            fresh = self._fetch(user, year, month)
+            fresh = self._fetch(user, password, year, month)
         except Exception as exc:  # noqa: BLE001 - praise being down must not kill the page
             logger.warning("praise fetch failed for %s: %s", user.id, exc)
             self._last_error[user.id] = str(exc)
@@ -80,8 +81,7 @@ class PraiseCache:
             self._last_error[user.id] = None
         return fresh
 
-    def _fetch(self, user: User, year: int, month: int) -> CachedMonth:
-        password = decrypt(user.encrypted_password)
+    def _fetch(self, user: User, password: str, year: int, month: int) -> CachedMonth:
         with PraiseSession(
             user.praise_url, user.praise_email, password, session_path=None
         ) as praise:
@@ -127,6 +127,18 @@ def create_app(db: Store | None = None) -> FastAPI:
                 return user
         raise _NotAuthenticatedError
 
+    def require_password(request: Request) -> str:
+        """Decrypt the Praise password carried in the session cookie.
+
+        The password is never stored server-side; it lives only here, encrypted,
+        and is decrypted in memory per request to replay to Praise.
+        """
+        token = request.session.get("praise_pw")
+        if token:
+            with contextlib.suppress(Exception):  # tampered/rotated key -> re-auth
+                return decrypt(token)
+        raise _NotAuthenticatedError
+
     @app.exception_handler(_NotAuthenticatedError)
     async def _redirect_to_login(request: Request, exc: _NotAuthenticatedError) -> Response:  # noqa: ARG001
         # HTMX swaps wouldn't follow a 303, so ask it to do a full-page redirect.
@@ -135,10 +147,16 @@ def create_app(db: Store | None = None) -> FastAPI:
         return RedirectResponse("/login", status_code=303)
 
     def month_context(
-        request: Request, user: User, year: int, month: int, *, force: bool = False
+        request: Request,
+        user: User,
+        password: str,
+        year: int,
+        month: int,
+        *,
+        force: bool = False,
     ) -> dict[str, Any]:
         today = datetime.now(JST).date()
-        cached = cache.get_month(user, year, month, force=force)
+        cached = cache.get_month(user, password, year, month, force=force)
         actual_records = cached.records if cached else []
         summary = cached.summary if cached else None
         planned = db.get_planned_days_for_month(user.id, year, month)
@@ -204,19 +222,20 @@ def create_app(db: Store | None = None) -> FastAPI:
             logger.warning("login verification failed: %s", exc)
             return _login_error(request, "Could not reach that Praise server.")
 
-        encrypted = encrypt(password)
         user = db.get_user_by_identity(url, email)
         if user is None:
             user = db.create_user(
                 url,
                 email,
-                encrypted,
                 hours_per_day=DEFAULT_HOURS_PER_DAY,
                 wfh_hours_per_business_day=DEFAULT_WFH_PER_BUSINESS_DAY,
             )
         else:
-            db.update_login(user.id, encrypted)
+            db.update_login(user.id)
         request.session["user_id"] = user.id
+        # The password is never persisted server-side: it rides in the signed
+        # session cookie, encrypted, and is decrypted in memory per fetch.
+        request.session["praise_pw"] = encrypt(password)
         return RedirectResponse("/", status_code=303)
 
     def _login_error(request: Request, message: str) -> HTMLResponse:
@@ -264,26 +283,40 @@ def create_app(db: Store | None = None) -> FastAPI:
 
     @app.get("/month/{year}/{month}", response_class=HTMLResponse)
     def month_view(
-        request: Request, user: Annotated[User, Depends(require_user)], year: int, month: int
+        request: Request,
+        user: Annotated[User, Depends(require_user)],
+        password: Annotated[str, Depends(require_password)],
+        year: int,
+        month: int,
     ) -> HTMLResponse:
         return templates.TemplateResponse(
-            request, "month.html", month_context(request, user, year, month)
+            request, "month.html", month_context(request, user, password, year, month)
         )
 
     @app.get("/month/{year}/{month}/content", response_class=HTMLResponse)
     def month_content(
-        request: Request, user: Annotated[User, Depends(require_user)], year: int, month: int
+        request: Request,
+        user: Annotated[User, Depends(require_user)],
+        password: Annotated[str, Depends(require_password)],
+        year: int,
+        month: int,
     ) -> HTMLResponse:
         return templates.TemplateResponse(
-            request, "_content.html", month_context(request, user, year, month)
+            request, "_content.html", month_context(request, user, password, year, month)
         )
 
     @app.post("/month/{year}/{month}/refresh", response_class=HTMLResponse)
     def month_refresh(
-        request: Request, user: Annotated[User, Depends(require_user)], year: int, month: int
+        request: Request,
+        user: Annotated[User, Depends(require_user)],
+        password: Annotated[str, Depends(require_password)],
+        year: int,
+        month: int,
     ) -> HTMLResponse:
         return templates.TemplateResponse(
-            request, "_content.html", month_context(request, user, year, month, force=True)
+            request,
+            "_content.html",
+            month_context(request, user, password, year, month, force=True),
         )
 
     @app.get("/plan/{day}", response_class=HTMLResponse)
@@ -302,6 +335,7 @@ def create_app(db: Store | None = None) -> FastAPI:
     def plan_save(
         request: Request,
         user: Annotated[User, Depends(require_user)],
+        password: Annotated[str, Depends(require_password)],
         day: str,
         office_hours: Annotated[str, Form()] = "0",
         wfh_hours: Annotated[str, Form()] = "0",
@@ -321,17 +355,24 @@ def create_app(db: Store | None = None) -> FastAPI:
             ),
         )
         return templates.TemplateResponse(
-            request, "_content.html", month_context(request, user, target.year, target.month)
+            request,
+            "_content.html",
+            month_context(request, user, password, target.year, target.month),
         )
 
     @app.delete("/plan/{day}", response_class=HTMLResponse)
     def plan_delete(
-        request: Request, user: Annotated[User, Depends(require_user)], day: str
+        request: Request,
+        user: Annotated[User, Depends(require_user)],
+        password: Annotated[str, Depends(require_password)],
+        day: str,
     ) -> HTMLResponse:
         target = date.fromisoformat(day)
         db.delete_planned_day(user.id, target)
         return templates.TemplateResponse(
-            request, "_content.html", month_context(request, user, target.year, target.month)
+            request,
+            "_content.html",
+            month_context(request, user, password, target.year, target.month),
         )
 
     @app.get("/health")

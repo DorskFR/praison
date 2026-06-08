@@ -1,9 +1,11 @@
 """Storage: Postgres when DB_HOST is set, SQLite otherwise.
 
 Multi-tenant: every user is a row in ``users`` (keyed on a Praise server + email
-pair, with the Praise password encrypted at rest) and every planned day is scoped
-to a ``user_id``. Legacy single-tenant rows (no ``user_id``) are migrated to a
-``'legacy'`` placeholder and claimed by the seeded user on startup.
+pair) and every planned day is scoped to a ``user_id``. The Praise password is
+never stored here -- it lives only in the user's session cookie -- so the user
+row exists purely for ownership and per-user settings. Legacy single-tenant rows
+(no ``user_id``) are migrated to a ``'legacy'`` placeholder and claimed by the
+seeded user on startup.
 """
 
 import os
@@ -17,9 +19,7 @@ from praison.config import DEFAULT_DB_PATH
 from praison.models import PlannedDay, User
 
 _COLUMNS = "date, office_minutes, remote_minutes, is_paid_leave, is_half_day_leave, note"
-_USER_COLUMNS = (
-    "id, praise_url, praise_email, encrypted_password, hours_per_day, wfh_hours_per_business_day"
-)
+_USER_COLUMNS = "id, praise_url, praise_email, hours_per_day, wfh_hours_per_business_day"
 _LEGACY_USER_ID = "legacy"
 
 
@@ -40,9 +40,8 @@ def _row_to_user(row: tuple) -> User:
         id=row[0],
         praise_url=row[1],
         praise_email=row[2],
-        encrypted_password=row[3],
-        hours_per_day=row[4],
-        wfh_hours_per_business_day=row[5],
+        hours_per_day=row[3],
+        wfh_hours_per_business_day=row[4],
     )
 
 
@@ -63,7 +62,6 @@ class Store(Protocol):
         self,
         praise_url: str,
         praise_email: str,
-        encrypted_password: str,
         hours_per_day: int,
         wfh_hours_per_business_day: float,
     ) -> User: ...
@@ -72,7 +70,7 @@ class Store(Protocol):
 
     def get_user_by_id(self, user_id: str) -> User | None: ...
 
-    def update_login(self, user_id: str, encrypted_password: str) -> None: ...
+    def update_login(self, user_id: str) -> None: ...
 
     def update_settings(
         self, user_id: str, hours_per_day: int, wfh_hours_per_business_day: float
@@ -108,7 +106,6 @@ _USERS_SQLITE = """
         id TEXT PRIMARY KEY,
         praise_url TEXT NOT NULL,
         praise_email TEXT NOT NULL,
-        encrypted_password TEXT NOT NULL,
         hours_per_day INTEGER NOT NULL DEFAULT 8,
         wfh_hours_per_business_day REAL NOT NULL DEFAULT 1.5,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -142,6 +139,11 @@ class SqliteStore:
     def _init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(_USERS_SQLITE)
+            # Drop the now-unused password column: the Praise password lives in
+            # the session cookie, never at rest. (SQLite >= 3.35 supports this.)
+            user_cols = [row[1] for row in conn.execute("PRAGMA table_info(users)")]
+            if "encrypted_password" in user_cols:
+                conn.execute("ALTER TABLE users DROP COLUMN encrypted_password")
             cols = [row[1] for row in conn.execute("PRAGMA table_info(planned_days)")]
             if not cols:
                 conn.execute(_PLANNED_SQLITE)
@@ -161,7 +163,6 @@ class SqliteStore:
         self,
         praise_url: str,
         praise_email: str,
-        encrypted_password: str,
         hours_per_day: int,
         wfh_hours_per_business_day: float,
     ) -> User:
@@ -169,18 +170,16 @@ class SqliteStore:
             id=_new_user_id(),
             praise_url=praise_url,
             praise_email=praise_email,
-            encrypted_password=encrypted_password,
             hours_per_day=hours_per_day,
             wfh_hours_per_business_day=wfh_hours_per_business_day,
         )
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                f"INSERT INTO users ({_USER_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?)",  # noqa: S608
+                f"INSERT INTO users ({_USER_COLUMNS}) VALUES (?, ?, ?, ?, ?)",  # noqa: S608
                 (
                     user.id,
                     user.praise_url,
                     user.praise_email,
-                    user.encrypted_password,
                     user.hours_per_day,
                     user.wfh_hours_per_business_day,
                 ),
@@ -207,12 +206,11 @@ class SqliteStore:
             row = cursor.fetchone()
             return _row_to_user(row) if row else None
 
-    def update_login(self, user_id: str, encrypted_password: str) -> None:
+    def update_login(self, user_id: str) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "UPDATE users SET encrypted_password = ?, last_login_at = datetime('now') "
-                "WHERE id = ?",
-                (encrypted_password, user_id),
+                "UPDATE users SET last_login_at = datetime('now') WHERE id = ?",
+                (user_id,),
             )
             conn.commit()
 
@@ -285,7 +283,6 @@ _USERS_PG = """
         id TEXT PRIMARY KEY,
         praise_url TEXT NOT NULL,
         praise_email TEXT NOT NULL,
-        encrypted_password TEXT NOT NULL,
         hours_per_day INTEGER NOT NULL DEFAULT 8,
         wfh_hours_per_business_day DOUBLE PRECISION NOT NULL DEFAULT 1.5,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -322,6 +319,9 @@ class PostgresStore:
     def _init_db(self) -> None:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(_USERS_PG)
+            # Drop the now-unused password column: the Praise password lives in
+            # the session cookie, never at rest.
+            cur.execute("ALTER TABLE users DROP COLUMN IF EXISTS encrypted_password")
             cur.execute(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'planned_days'"
@@ -345,7 +345,6 @@ class PostgresStore:
         self,
         praise_url: str,
         praise_email: str,
-        encrypted_password: str,
         hours_per_day: int,
         wfh_hours_per_business_day: float,
     ) -> User:
@@ -353,18 +352,16 @@ class PostgresStore:
             id=_new_user_id(),
             praise_url=praise_url,
             praise_email=praise_email,
-            encrypted_password=encrypted_password,
             hours_per_day=hours_per_day,
             wfh_hours_per_business_day=wfh_hours_per_business_day,
         )
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                f"INSERT INTO users ({_USER_COLUMNS}) VALUES (%s, %s, %s, %s, %s, %s)",  # noqa: S608
+                f"INSERT INTO users ({_USER_COLUMNS}) VALUES (%s, %s, %s, %s, %s)",  # noqa: S608
                 (
                     user.id,
                     user.praise_url,
                     user.praise_email,
-                    user.encrypted_password,
                     user.hours_per_day,
                     user.wfh_hours_per_business_day,
                 ),
@@ -391,11 +388,11 @@ class PostgresStore:
             row = cur.fetchone()
             return _row_to_user(row) if row else None
 
-    def update_login(self, user_id: str, encrypted_password: str) -> None:
+    def update_login(self, user_id: str) -> None:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                "UPDATE users SET encrypted_password = %s, last_login_at = now() WHERE id = %s",
-                (encrypted_password, user_id),
+                "UPDATE users SET last_login_at = now() WHERE id = %s",
+                (user_id,),
             )
             conn.commit()
 
