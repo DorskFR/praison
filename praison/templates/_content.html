@@ -6,6 +6,7 @@
     <button class="refresh"
             hx-post="/month/{{ year }}/{{ month }}/refresh"
             hx-target="#content" hx-swap="innerHTML">⟳</button>
+    <form method="post" action="/logout" class="logout"><button type="submit" title="Log out">⎋</button></form>
   </nav>
   {% if fetched_at %}<p class="meta">praise data as of {{ fetched_at }}</p>{% endif %}
   {% if fetch_error %}<p class="error">⚠ praise fetch failed: {{ fetch_error }}</p>{% endif %}

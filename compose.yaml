@@ -4,9 +4,14 @@ services:
     ports:
       - "8000:8000"
     environment:
-      PRAISE_URL: ${PRAISE_URL}
-      PRAISE_EMAIL: ${PRAISE_EMAIL}
-      PRAISE_PASSWORD: ${PRAISE_PASSWORD}
+      # Fernet key (urlsafe-b64 32B) for credential encryption + session signing.
+      # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      PRAISON_SECRET_KEY: ${PRAISON_SECRET_KEY}
+      # PRAISE_* below are optional: a legacy single-tenant deployment is migrated
+      # into the first user on startup. New users register through the login form.
+      PRAISE_URL: ${PRAISE_URL:-}
+      PRAISE_EMAIL: ${PRAISE_EMAIL:-}
+      PRAISE_PASSWORD: ${PRAISE_PASSWORD:-}
       PRAISE_HOURS_PER_DAY: ${PRAISE_HOURS_PER_DAY:-8}
       PRAISON_WFH_HOURS_PER_BUSINESS_DAY: ${PRAISON_WFH_HOURS_PER_BUSINESS_DAY:-1.5}
       DB_HOST: database

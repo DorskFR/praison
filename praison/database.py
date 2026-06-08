@@ -1,15 +1,26 @@
-"""Planning storage: Postgres when DB_HOST is set, SQLite otherwise."""
+"""Storage: Postgres when DB_HOST is set, SQLite otherwise.
+
+Multi-tenant: every user is a row in ``users`` (keyed on a Praise server + email
+pair, with the Praise password encrypted at rest) and every planned day is scoped
+to a ``user_id``. Legacy single-tenant rows (no ``user_id``) are migrated to a
+``'legacy'`` placeholder and claimed by the seeded user on startup.
+"""
 
 import os
 import sqlite3
+import uuid
 from datetime import date
 from pathlib import Path
 from typing import Protocol
 
 from praison.config import DEFAULT_DB_PATH
-from praison.models import PlannedDay
+from praison.models import PlannedDay, User
 
 _COLUMNS = "date, office_minutes, remote_minutes, is_paid_leave, is_half_day_leave, note"
+_USER_COLUMNS = (
+    "id, praise_url, praise_email, encrypted_password, hours_per_day, wfh_hours_per_business_day"
+)
+_LEGACY_USER_ID = "legacy"
 
 
 def _row_to_planned(row: tuple) -> PlannedDay:
@@ -24,39 +35,99 @@ def _row_to_planned(row: tuple) -> PlannedDay:
     )
 
 
+def _row_to_user(row: tuple) -> User:
+    return User(
+        id=row[0],
+        praise_url=row[1],
+        praise_email=row[2],
+        encrypted_password=row[3],
+        hours_per_day=row[4],
+        wfh_hours_per_business_day=row[5],
+    )
+
+
 def _month_bounds(year: int, month: int) -> tuple[date, date]:
     start = date(year, month, 1)
     end = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
     return start, end
 
 
-class PlanningStore(Protocol):
-    """Storage interface for planned days."""
-
-    def save_planned_day(self, planned: PlannedDay) -> None: ...
-
-    def get_planned_day(self, target_date: date) -> PlannedDay | None: ...
-
-    def get_planned_days_for_month(self, year: int, month: int) -> list[PlannedDay]: ...
-
-    def delete_planned_day(self, target_date: date) -> None: ...
-
-    def clear_all(self) -> None: ...
+def _new_user_id() -> str:
+    return uuid.uuid4().hex
 
 
-def create_database() -> PlanningStore:
+class Store(Protocol):
+    """Storage interface for users and their planned days."""
+
+    def create_user(
+        self,
+        praise_url: str,
+        praise_email: str,
+        encrypted_password: str,
+        hours_per_day: int,
+        wfh_hours_per_business_day: float,
+    ) -> User: ...
+
+    def get_user_by_identity(self, praise_url: str, praise_email: str) -> User | None: ...
+
+    def get_user_by_id(self, user_id: str) -> User | None: ...
+
+    def update_login(self, user_id: str, encrypted_password: str) -> None: ...
+
+    def claim_legacy_plans(self, user_id: str) -> None: ...
+
+    def save_planned_day(self, user_id: str, planned: PlannedDay) -> None: ...
+
+    def get_planned_day(self, user_id: str, target_date: date) -> PlannedDay | None: ...
+
+    def get_planned_days_for_month(
+        self, user_id: str, year: int, month: int
+    ) -> list[PlannedDay]: ...
+
+    def delete_planned_day(self, user_id: str, target_date: date) -> None: ...
+
+
+def create_database() -> Store:
     """Postgres when DB_HOST is set in the environment, SQLite otherwise."""
     if os.environ.get("DB_HOST"):
-        return PostgresPlanningDatabase(
+        return PostgresStore(
             host=os.environ["DB_HOST"],
             dbname=os.environ.get("DB_NAME", "praison"),
             user=os.environ.get("DB_USER", "postgres"),
             password=os.environ.get("DB_PASS", "postgres"),
         )
-    return PlanningDatabase()
+    return SqliteStore()
 
 
-class PlanningDatabase:
+_USERS_SQLITE = """
+    CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        praise_url TEXT NOT NULL,
+        praise_email TEXT NOT NULL,
+        encrypted_password TEXT NOT NULL,
+        hours_per_day INTEGER NOT NULL DEFAULT 8,
+        wfh_hours_per_business_day REAL NOT NULL DEFAULT 1.5,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_login_at TEXT,
+        UNIQUE (praise_url, praise_email)
+    )
+"""
+
+_PLANNED_SQLITE = """
+    CREATE TABLE IF NOT EXISTS planned_days (
+        user_id TEXT NOT NULL,
+        date TEXT NOT NULL,
+        office_minutes INTEGER NOT NULL,
+        remote_minutes INTEGER NOT NULL,
+        is_paid_leave INTEGER NOT NULL,
+        is_half_day_leave INTEGER NOT NULL DEFAULT 0,
+        note TEXT,
+        PRIMARY KEY (user_id, date)
+    )
+"""
+
+
+class SqliteStore:
     """SQLite-backed store (local/standalone use)."""
 
     def __init__(self, db_path: Path = DEFAULT_DB_PATH) -> None:
@@ -65,26 +136,97 @@ class PlanningDatabase:
         self._init_db()
 
     def _init_db(self) -> None:
-        """Initialize database schema."""
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS planned_days (
-                    date TEXT PRIMARY KEY,
-                    office_minutes INTEGER NOT NULL,
-                    remote_minutes INTEGER NOT NULL,
-                    is_paid_leave INTEGER NOT NULL,
-                    is_half_day_leave INTEGER NOT NULL DEFAULT 0,
-                    note TEXT
+            conn.execute(_USERS_SQLITE)
+            cols = [row[1] for row in conn.execute("PRAGMA table_info(planned_days)")]
+            if not cols:
+                conn.execute(_PLANNED_SQLITE)
+            elif "user_id" not in cols:
+                # Legacy single-tenant table keyed on date alone: rebuild with a
+                # composite key, tagging existing rows as 'legacy' for later claim.
+                conn.execute("ALTER TABLE planned_days RENAME TO planned_days_legacy")
+                conn.execute(_PLANNED_SQLITE)
+                conn.execute(
+                    f"INSERT INTO planned_days (user_id, {_COLUMNS}) "  # noqa: S608
+                    f"SELECT '{_LEGACY_USER_ID}', {_COLUMNS} FROM planned_days_legacy"
                 )
-            """)
+                conn.execute("DROP TABLE planned_days_legacy")
             conn.commit()
 
-    def save_planned_day(self, planned: PlannedDay) -> None:
-        """Save or update a planned day."""
+    def create_user(
+        self,
+        praise_url: str,
+        praise_email: str,
+        encrypted_password: str,
+        hours_per_day: int,
+        wfh_hours_per_business_day: float,
+    ) -> User:
+        user = User(
+            id=_new_user_id(),
+            praise_url=praise_url,
+            praise_email=praise_email,
+            encrypted_password=encrypted_password,
+            hours_per_day=hours_per_day,
+            wfh_hours_per_business_day=wfh_hours_per_business_day,
+        )
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                f"INSERT OR REPLACE INTO planned_days ({_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?)",  # noqa: S608
+                f"INSERT INTO users ({_USER_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?)",  # noqa: S608
                 (
+                    user.id,
+                    user.praise_url,
+                    user.praise_email,
+                    user.encrypted_password,
+                    user.hours_per_day,
+                    user.wfh_hours_per_business_day,
+                ),
+            )
+            conn.commit()
+        return user
+
+    def get_user_by_identity(self, praise_url: str, praise_email: str) -> User | None:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                f"SELECT {_USER_COLUMNS} FROM users "  # noqa: S608
+                "WHERE praise_url = ? AND praise_email = ?",
+                (praise_url, praise_email),
+            )
+            row = cursor.fetchone()
+            return _row_to_user(row) if row else None
+
+    def get_user_by_id(self, user_id: str) -> User | None:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                f"SELECT {_USER_COLUMNS} FROM users WHERE id = ?",  # noqa: S608
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return _row_to_user(row) if row else None
+
+    def update_login(self, user_id: str, encrypted_password: str) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE users SET encrypted_password = ?, last_login_at = datetime('now') "
+                "WHERE id = ?",
+                (encrypted_password, user_id),
+            )
+            conn.commit()
+
+    def claim_legacy_plans(self, user_id: str) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE planned_days SET user_id = ? WHERE user_id = ?",
+                (user_id, _LEGACY_USER_ID),
+            )
+            conn.commit()
+
+    def save_planned_day(self, user_id: str, planned: PlannedDay) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                f"INSERT OR REPLACE INTO planned_days (user_id, {_COLUMNS}) "  # noqa: S608
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    user_id,
                     planned.date.isoformat(),
                     planned.office_minutes,
                     planned.remote_minutes,
@@ -95,41 +237,64 @@ class PlanningDatabase:
             )
             conn.commit()
 
-    def get_planned_day(self, target_date: date) -> PlannedDay | None:
-        """Get a planned day by date."""
+    def get_planned_day(self, user_id: str, target_date: date) -> PlannedDay | None:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                f"SELECT {_COLUMNS} FROM planned_days WHERE date = ?",  # noqa: S608
-                (target_date.isoformat(),),
+                f"SELECT {_COLUMNS} FROM planned_days "  # noqa: S608
+                "WHERE user_id = ? AND date = ?",
+                (user_id, target_date.isoformat()),
             )
             row = cursor.fetchone()
             return _row_to_planned(row) if row else None
 
-    def get_planned_days_for_month(self, year: int, month: int) -> list[PlannedDay]:
-        """Get all planned days for a specific month."""
+    def get_planned_days_for_month(self, user_id: str, year: int, month: int) -> list[PlannedDay]:
         start_date, end_date = _month_bounds(year, month)
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
                 f"SELECT {_COLUMNS} FROM planned_days "  # noqa: S608
-                "WHERE date >= ? AND date < ? ORDER BY date",
-                (start_date.isoformat(), end_date.isoformat()),
+                "WHERE user_id = ? AND date >= ? AND date < ? ORDER BY date",
+                (user_id, start_date.isoformat(), end_date.isoformat()),
             )
             return [_row_to_planned(row) for row in cursor]
 
-    def delete_planned_day(self, target_date: date) -> None:
-        """Delete a planned day."""
+    def delete_planned_day(self, user_id: str, target_date: date) -> None:
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM planned_days WHERE date = ?", (target_date.isoformat(),))
-            conn.commit()
-
-    def clear_all(self) -> None:
-        """Clear all planned days (for testing)."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM planned_days")
+            conn.execute(
+                "DELETE FROM planned_days WHERE user_id = ? AND date = ?",
+                (user_id, target_date.isoformat()),
+            )
             conn.commit()
 
 
-class PostgresPlanningDatabase:
+_USERS_PG = """
+    CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        praise_url TEXT NOT NULL,
+        praise_email TEXT NOT NULL,
+        encrypted_password TEXT NOT NULL,
+        hours_per_day INTEGER NOT NULL DEFAULT 8,
+        wfh_hours_per_business_day DOUBLE PRECISION NOT NULL DEFAULT 1.5,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        last_login_at TIMESTAMPTZ,
+        UNIQUE (praise_url, praise_email)
+    )
+"""
+
+_PLANNED_PG = """
+    CREATE TABLE IF NOT EXISTS planned_days (
+        user_id TEXT NOT NULL,
+        date DATE NOT NULL,
+        office_minutes INTEGER NOT NULL,
+        remote_minutes INTEGER NOT NULL,
+        is_paid_leave BOOLEAN NOT NULL,
+        is_half_day_leave BOOLEAN NOT NULL DEFAULT FALSE,
+        note TEXT,
+        PRIMARY KEY (user_id, date)
+    )
+"""
+
+
+class PostgresStore:
     """Postgres-backed store (deployed use)."""
 
     def __init__(self, host: str, dbname: str, user: str, password: str) -> None:
@@ -141,33 +306,106 @@ class PostgresPlanningDatabase:
         self._init_db()
 
     def _init_db(self) -> None:
-        """Initialize database schema."""
         with self._connect() as conn, conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS planned_days (
-                    date DATE PRIMARY KEY,
-                    office_minutes INTEGER NOT NULL,
-                    remote_minutes INTEGER NOT NULL,
-                    is_paid_leave BOOLEAN NOT NULL,
-                    is_half_day_leave BOOLEAN NOT NULL DEFAULT FALSE,
-                    note TEXT
+            cur.execute(_USERS_PG)
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'planned_days'"
+            )
+            cols = {row[0] for row in cur.fetchall()}
+            if not cols:
+                cur.execute(_PLANNED_PG)
+            elif "user_id" not in cols:
+                # Legacy single-tenant table keyed on date: add user_id, retag the
+                # primary key as (user_id, date), tag existing rows 'legacy'.
+                cur.execute(
+                    "ALTER TABLE planned_days ADD COLUMN user_id TEXT NOT NULL "
+                    f"DEFAULT '{_LEGACY_USER_ID}'"
                 )
-            """)
+                cur.execute("ALTER TABLE planned_days DROP CONSTRAINT IF EXISTS planned_days_pkey")
+                cur.execute("ALTER TABLE planned_days ADD PRIMARY KEY (user_id, date)")
+                cur.execute("ALTER TABLE planned_days ALTER COLUMN user_id DROP DEFAULT")
             conn.commit()
 
-    def save_planned_day(self, planned: PlannedDay) -> None:
-        """Save or update a planned day."""
+    def create_user(
+        self,
+        praise_url: str,
+        praise_email: str,
+        encrypted_password: str,
+        hours_per_day: int,
+        wfh_hours_per_business_day: float,
+    ) -> User:
+        user = User(
+            id=_new_user_id(),
+            praise_url=praise_url,
+            praise_email=praise_email,
+            encrypted_password=encrypted_password,
+            hours_per_day=hours_per_day,
+            wfh_hours_per_business_day=wfh_hours_per_business_day,
+        )
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                f"INSERT INTO planned_days ({_COLUMNS}) "  # noqa: S608
-                "VALUES (%s, %s, %s, %s, %s, %s) "
-                "ON CONFLICT (date) DO UPDATE SET "
+                f"INSERT INTO users ({_USER_COLUMNS}) VALUES (%s, %s, %s, %s, %s, %s)",  # noqa: S608
+                (
+                    user.id,
+                    user.praise_url,
+                    user.praise_email,
+                    user.encrypted_password,
+                    user.hours_per_day,
+                    user.wfh_hours_per_business_day,
+                ),
+            )
+            conn.commit()
+        return user
+
+    def get_user_by_identity(self, praise_url: str, praise_email: str) -> User | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {_USER_COLUMNS} FROM users "  # noqa: S608
+                "WHERE praise_url = %s AND praise_email = %s",
+                (praise_url, praise_email),
+            )
+            row = cur.fetchone()
+            return _row_to_user(row) if row else None
+
+    def get_user_by_id(self, user_id: str) -> User | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {_USER_COLUMNS} FROM users WHERE id = %s",  # noqa: S608
+                (user_id,),
+            )
+            row = cur.fetchone()
+            return _row_to_user(row) if row else None
+
+    def update_login(self, user_id: str, encrypted_password: str) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET encrypted_password = %s, last_login_at = now() WHERE id = %s",
+                (encrypted_password, user_id),
+            )
+            conn.commit()
+
+    def claim_legacy_plans(self, user_id: str) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE planned_days SET user_id = %s WHERE user_id = %s",
+                (user_id, _LEGACY_USER_ID),
+            )
+            conn.commit()
+
+    def save_planned_day(self, user_id: str, planned: PlannedDay) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO planned_days (user_id, {_COLUMNS}) "  # noqa: S608
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (user_id, date) DO UPDATE SET "
                 "office_minutes = EXCLUDED.office_minutes, "
                 "remote_minutes = EXCLUDED.remote_minutes, "
                 "is_paid_leave = EXCLUDED.is_paid_leave, "
                 "is_half_day_leave = EXCLUDED.is_half_day_leave, "
                 "note = EXCLUDED.note",
                 (
+                    user_id,
                     planned.date,
                     planned.office_minutes,
                     planned.remote_minutes,
@@ -178,35 +416,30 @@ class PostgresPlanningDatabase:
             )
             conn.commit()
 
-    def get_planned_day(self, target_date: date) -> PlannedDay | None:
-        """Get a planned day by date."""
+    def get_planned_day(self, user_id: str, target_date: date) -> PlannedDay | None:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                f"SELECT {_COLUMNS} FROM planned_days WHERE date = %s",  # noqa: S608
-                (target_date,),
+                f"SELECT {_COLUMNS} FROM planned_days "  # noqa: S608
+                "WHERE user_id = %s AND date = %s",
+                (user_id, target_date),
             )
             row = cur.fetchone()
             return _row_to_planned(row) if row else None
 
-    def get_planned_days_for_month(self, year: int, month: int) -> list[PlannedDay]:
-        """Get all planned days for a specific month."""
+    def get_planned_days_for_month(self, user_id: str, year: int, month: int) -> list[PlannedDay]:
         start_date, end_date = _month_bounds(year, month)
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 f"SELECT {_COLUMNS} FROM planned_days "  # noqa: S608
-                "WHERE date >= %s AND date < %s ORDER BY date",
-                (start_date, end_date),
+                "WHERE user_id = %s AND date >= %s AND date < %s ORDER BY date",
+                (user_id, start_date, end_date),
             )
             return [_row_to_planned(row) for row in cur.fetchall()]
 
-    def delete_planned_day(self, target_date: date) -> None:
-        """Delete a planned day."""
+    def delete_planned_day(self, user_id: str, target_date: date) -> None:
         with self._connect() as conn, conn.cursor() as cur:
-            cur.execute("DELETE FROM planned_days WHERE date = %s", (target_date,))
-            conn.commit()
-
-    def clear_all(self) -> None:
-        """Clear all planned days (for testing)."""
-        with self._connect() as conn, conn.cursor() as cur:
-            cur.execute("DELETE FROM planned_days")
+            cur.execute(
+                "DELETE FROM planned_days WHERE user_id = %s AND date = %s",
+                (user_id, target_date),
+            )
             conn.commit()
