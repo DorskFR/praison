@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 600  # auto refresh praise data every 10 minutes
 
+# Defaults for a newly registered user; both are editable per user via /settings.
+DEFAULT_HOURS_PER_DAY = 8
+DEFAULT_WFH_PER_BUSINESS_DAY = 1.0
+
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
@@ -204,7 +208,11 @@ def create_app(db: Store | None = None) -> FastAPI:
         user = db.get_user_by_identity(url, email)
         if user is None:
             user = db.create_user(
-                url, email, encrypted, hours_per_day=8, wfh_hours_per_business_day=1.5
+                url,
+                email,
+                encrypted,
+                hours_per_day=DEFAULT_HOURS_PER_DAY,
+                wfh_hours_per_business_day=DEFAULT_WFH_PER_BUSINESS_DAY,
             )
         else:
             db.update_login(user.id, encrypted)
@@ -220,6 +228,34 @@ def create_app(db: Store | None = None) -> FastAPI:
     def logout(request: Request) -> RedirectResponse:
         request.session.clear()
         return RedirectResponse("/login", status_code=303)
+
+    @app.get("/settings", response_class=HTMLResponse)
+    def settings_form(
+        request: Request, user: Annotated[User, Depends(require_user)]
+    ) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request, "settings.html", {"request": request, "user": user}
+        )
+
+    @app.post("/settings", response_class=HTMLResponse)
+    def settings_save(
+        request: Request,
+        user: Annotated[User, Depends(require_user)],
+        hours_per_day: Annotated[str, Form()],
+        wfh_hours_per_business_day: Annotated[str, Form()],
+    ) -> Response:
+        try:
+            hours = int(float(hours_per_day))
+            wfh = float(wfh_hours_per_business_day)
+        except ValueError:
+            return templates.TemplateResponse(
+                request,
+                "settings.html",
+                {"request": request, "user": user, "error": "Please enter valid numbers."},
+                status_code=400,
+            )
+        db.update_settings(user.id, hours, wfh)
+        return RedirectResponse("/", status_code=303)
 
     @app.get("/", response_class=HTMLResponse)
     def index(user: Annotated[User, Depends(require_user)]) -> RedirectResponse:  # noqa: ARG001

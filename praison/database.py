@@ -74,6 +74,10 @@ class Store(Protocol):
 
     def update_login(self, user_id: str, encrypted_password: str) -> None: ...
 
+    def update_settings(
+        self, user_id: str, hours_per_day: int, wfh_hours_per_business_day: float
+    ) -> None: ...
+
     def claim_legacy_plans(self, user_id: str) -> None: ...
 
     def save_planned_day(self, user_id: str, planned: PlannedDay) -> None: ...
@@ -209,6 +213,16 @@ class SqliteStore:
                 "UPDATE users SET encrypted_password = ?, last_login_at = datetime('now') "
                 "WHERE id = ?",
                 (encrypted_password, user_id),
+            )
+            conn.commit()
+
+    def update_settings(
+        self, user_id: str, hours_per_day: int, wfh_hours_per_business_day: float
+    ) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE users SET hours_per_day = ?, wfh_hours_per_business_day = ? WHERE id = ?",
+                (hours_per_day, wfh_hours_per_business_day, user_id),
             )
             conn.commit()
 
@@ -382,6 +396,17 @@ class PostgresStore:
             cur.execute(
                 "UPDATE users SET encrypted_password = %s, last_login_at = now() WHERE id = %s",
                 (encrypted_password, user_id),
+            )
+            conn.commit()
+
+    def update_settings(
+        self, user_id: str, hours_per_day: int, wfh_hours_per_business_day: float
+    ) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET hours_per_day = %s, wfh_hours_per_business_day = %s "
+                "WHERE id = %s",
+                (hours_per_day, wfh_hours_per_business_day, user_id),
             )
             conn.commit()
 
