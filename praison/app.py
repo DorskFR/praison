@@ -201,7 +201,11 @@ def create_app(db: Store | None = None) -> FastAPI:
 
     @app.get("/login", response_class=HTMLResponse)
     def login_form(request: Request) -> Response:
-        if request.session.get("user_id"):
+        # Only skip the form when fully authenticated. A session with a user_id
+        # but no password (e.g. a cookie predating session-stored credentials)
+        # must still see the form, else "/" -> needs password -> "/login" -> "/"
+        # loops forever.
+        if request.session.get("user_id") and request.session.get("praise_pw"):
             return RedirectResponse("/", status_code=303)
         return templates.TemplateResponse(request, "login.html", {"request": request})
 
