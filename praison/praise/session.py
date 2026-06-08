@@ -18,6 +18,18 @@ from praison.errors import InvalidPraiseLoginError, PraiseApiError
 _TIMEOUT = 30  # seconds
 
 
+def normalize_url(base_url: str) -> str:
+    """Canonical Praise base URL: default to https, drop trailing slashes.
+
+    Used both for connecting and as part of the per-user identity key, so the
+    same server typed two ways resolves to one account.
+    """
+    base_url = base_url.strip()
+    if not base_url.startswith(("http://", "https://")):
+        base_url = f"https://{base_url}"
+    return base_url.rstrip("/")
+
+
 class PraiseSession:
     """Authenticated context-managed session against praise."""
 
@@ -26,20 +38,20 @@ class PraiseSession:
         base_url: str,
         email: str,
         password: str,
-        session_path: Path = DEFAULT_SESSION_PATH,
+        session_path: Path | None = DEFAULT_SESSION_PATH,
     ) -> None:
-        if not base_url.startswith(("http://", "https://")):
-            base_url = f"https://{base_url}"
-        self._base_url = base_url.rstrip("/")
+        self._base_url = normalize_url(base_url)
         self._email = email
         self._password = password
+        # session_path=None keeps cookies in memory only (no disk persistence),
+        # used for per-user web sessions in the multi-tenant server.
         self._session_path = session_path
         self._session: requests.Session | None = None
 
     @property
-    def _meta_path(self) -> Path:
+    def _meta_path(self) -> Path | None:
         """File holding the cached build version, alongside the cookie file."""
-        return self._session_path.with_suffix(".meta")
+        return self._session_path.with_suffix(".meta") if self._session_path else None
 
     def __enter__(self) -> Self:
         self._session = requests.Session()
@@ -136,7 +148,7 @@ class PraiseSession:
     def _load_session(self) -> bool:
         """Load persisted cookies and build version. Returns True if a usable
         session was restored. Missing/corrupt files mean a fresh login."""
-        if not self._session_path.is_file():
+        if self._session_path is None or not self._session_path.is_file():
             return False
         jar = LWPCookieJar(str(self._session_path))
         try:
@@ -156,6 +168,8 @@ class PraiseSession:
 
     def _save_session(self) -> None:
         """Persist the current cookies (0600) and build version."""
+        if self._session_path is None:
+            return
         self._session_path.parent.mkdir(parents=True, exist_ok=True)
         jar = LWPCookieJar(str(self._session_path))
         for cookie in self.session.cookies:
@@ -165,14 +179,29 @@ class PraiseSession:
         self._save_build_version()
 
     def _load_build_version(self) -> str | None:
+        if self._meta_path is None:
+            return None
         try:
             return self._meta_path.read_text().strip() or None
         except OSError:
             return None
 
     def _save_build_version(self) -> None:
+        if self._meta_path is None:
+            return
         version = self.session.headers.get("X-Build-Version")
         if not version:
             return
         self._meta_path.write_text(str(version))
         self._meta_path.chmod(0o600)
+
+
+def verify_credentials(base_url: str, email: str, password: str) -> None:
+    """Validate credentials against Praise without persisting anything.
+
+    Raises ``InvalidPraiseLoginError`` if Praise rejects them, ``PraiseApiError``
+    or a network error if the server is unreachable. Used at login time to decide
+    whether to admit (and, on first login, register) a praison account.
+    """
+    with PraiseSession(base_url, email, password, session_path=None):
+        pass

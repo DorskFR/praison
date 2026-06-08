@@ -26,6 +26,23 @@ class DayType(StrEnum):
 
 
 @dataclass
+class User:
+    """A registered praison account, keyed on a Praise (server, email) pair.
+
+    The Praise password is stored encrypted at rest (``encrypted_password``) and
+    decrypted on demand to replay to the Praise server. There is no separate
+    praison password: the Praise credentials are the only proof of identity.
+    """
+
+    id: str
+    praise_url: str
+    praise_email: str
+    encrypted_password: str
+    hours_per_day: int = 8
+    wfh_hours_per_business_day: float = 1.5
+
+
+@dataclass
 class WorkEntry:
     """A single work entry (clock-in/clock-out pair)."""
 

@@ -18,11 +18,19 @@ Rules engine highlights:
 
 ```bash
 make setup
-uv run python -m praison config   # prompts for praise URL / email / password / rates
+export PRAISON_SECRET_KEY=$(uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 make run                          # http://localhost:8000
 ```
 
-Config lives in `~/.config/praison/config.ini` (or env vars `PRAISE_URL`, `PRAISE_EMAIL`, `PRAISE_PASSWORD`, `PRAISE_HOURS_PER_DAY`, `PRAISON_WFH_HOURS_PER_BUSINESS_DAY`). Planned days are stored in `~/.config/praison/planning.db` (SQLite) — or in Postgres when `DB_HOST` is set (with `DB_NAME`, `DB_USER`, `DB_PASS`).
+praison is **open / multi-tenant**: anyone reaches a login screen and signs in with their **Praise URL + email + password**. On the first successful login (validated against that Praise server) a local account is created — keyed on `(praise_url, email)`, no separate praison password. Multiple users and multiple Praise servers are supported side by side; all storage is scoped per user.
+
+Credentials are stored **encrypted at rest** (Fernet) and decrypted only to replay to the Praise server. Set `PRAISON_SECRET_KEY` to a urlsafe-base64 32-byte Fernet key; locally, one is generated and persisted at `~/.config/praison/secret.key` if unset. **Rotating or losing this key invalidates all stored credentials** (users simply log in again).
+
+Planned days and accounts are stored in `~/.config/praison/planning.db` (SQLite) — or in Postgres when `DB_HOST` is set (with `DB_NAME`, `DB_USER`, `DB_PASS`).
+
+### Migrating a legacy single-tenant deployment
+
+If `PRAISE_URL` / `PRAISE_EMAIL` / `PRAISE_PASSWORD` (or a `~/.config/praison/config.ini` written by `python -m praison config`) are present, that identity is seeded as the first user on startup and any pre-existing (un-scoped) planned days are claimed by it.
 
 ## Usage
 
