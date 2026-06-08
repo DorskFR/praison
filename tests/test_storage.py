@@ -42,6 +42,15 @@ def test_update_login_refreshes_password(store: SqliteStore) -> None:
     assert refreshed.encrypted_password == "new"  # noqa: S105
 
 
+def test_update_settings(store: SqliteStore) -> None:
+    user = store.create_user("https://p.example.com", "a@b.com", "e", 8, 1.0)
+    store.update_settings(user.id, 6, 1.5)
+    updated = store.get_user_by_id(user.id)
+    assert updated is not None
+    assert updated.hours_per_day == 6
+    assert updated.wfh_hours_per_business_day == 1.5
+
+
 def test_plans_are_scoped_per_user(store: SqliteStore) -> None:
     alice = store.create_user("https://p.example.com", "alice@b.com", "e", 8, 1.5)
     bob = store.create_user("https://p.example.com", "bob@b.com", "e", 8, 1.5)
