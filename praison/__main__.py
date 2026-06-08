@@ -13,7 +13,6 @@ import sys
 import uvicorn
 
 from praison.config import Config
-from praison.crypto import encrypt
 from praison.database import Store, create_database
 from praison.praise.session import normalize_url
 
@@ -57,10 +56,12 @@ def _seed_legacy_user(db: Store) -> None:
     url = normalize_url(config.praise_url)
     if db.get_user_by_identity(url, config.praise_email):
         return
+    # No password is stored: the seed only establishes the ownership row and
+    # claims orphaned plans. The user supplies their password at login, where it
+    # is kept in the session cookie only.
     user = db.create_user(
         url,
         config.praise_email,
-        encrypt(config.praise_password),
         config.hours_per_day,
         config.wfh_hours_per_business_day,
     )

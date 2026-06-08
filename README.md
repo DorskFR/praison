@@ -24,7 +24,7 @@ make run                          # http://localhost:8000
 
 praison is **open / multi-tenant**: anyone reaches a login screen and signs in with their **Praise URL + email + password**. On the first successful login (validated against that Praise server) a local account is created — keyed on `(praise_url, email)`, no separate praison password. Multiple users and multiple Praise servers are supported side by side; all storage is scoped per user.
 
-Credentials are stored **encrypted at rest** (Fernet) and decrypted only to replay to the Praise server. Set `PRAISON_SECRET_KEY` to a urlsafe-base64 32-byte Fernet key; locally, one is generated and persisted at `~/.config/praison/secret.key` if unset. **Rotating or losing this key invalidates all stored credentials** (users simply log in again).
+The Praise password is **never stored server-side**: it rides in the signed session cookie (Fernet-encrypted) and is decrypted in memory only to replay to the Praise server on each fetch. The database holds no credential material — only ownership (`(praise_url, email)` → account) and per-user settings. Logging out or letting the cookie expire drops the password; the user simply logs in again. Set `PRAISON_SECRET_KEY` to a urlsafe-base64 32-byte Fernet key (used both to sign the session cookie and to encrypt the password inside it); locally, one is generated and persisted at `~/.config/praison/secret.key` if unset. **Rotating or losing this key invalidates all active sessions** (users log in again).
 
 Planned days and accounts are stored in `~/.config/praison/planning.db` (SQLite) — or in Postgres when `DB_HOST` is set (with `DB_NAME`, `DB_USER`, `DB_PASS`).
 
