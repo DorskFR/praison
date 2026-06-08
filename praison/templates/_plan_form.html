@@ -1,26 +1,28 @@
 <tr id="row-{{ day.isoformat() }}" class="plan-form">
   <td colspan="6">
     <form hx-post="/plan/{{ day.isoformat() }}" hx-target="#content" hx-swap="innerHTML">
-      <strong>{{ day.strftime('%-d %a') }}</strong>
-      <label>Office <input type="text" name="office_hours" inputmode="decimal"
+      <span class="plan-day">{{ day.strftime('%-d %a') }}</span>
+      <label class="field">Office <input type="text" name="office_hours" inputmode="decimal"
         value="{{ planned.office_minutes / 60 if planned else '' }}" placeholder="8 or 7:30"></label>
-      <label>WFH <input type="text" name="wfh_hours" inputmode="decimal"
+      <label class="field">WFH <input type="text" name="wfh_hours" inputmode="decimal"
         value="{{ planned.remote_minutes / 60 if planned else '' }}" placeholder="1.5"></label>
-      <label>Leave
+      <label class="field">Leave
         <select name="leave">
           <option value="none">none</option>
           <option value="full" {% if planned and planned.is_paid_leave and not planned.is_half_day_leave %}selected{% endif %}>full day</option>
           <option value="half" {% if planned and planned.is_half_day_leave %}selected{% endif %}>half day</option>
         </select>
       </label>
-      <label>Note <input type="text" name="note" value="{{ planned.note if planned else '' }}"></label>
-      <button type="submit">Save</button>
-      {% if planned %}
-      <button type="button" hx-delete="/plan/{{ day.isoformat() }}"
-              hx-target="#content" hx-swap="innerHTML">Delete</button>
-      {% endif %}
-      <button type="button" hx-get="/month/{{ day.year }}/{{ day.month }}/content"
-              hx-target="#content" hx-swap="innerHTML">Cancel</button>
+      <label class="field">Note <input type="text" name="note" value="{{ planned.note if planned else '' }}"></label>
+      <div class="plan-actions">
+        <button class="btn btn-primary" type="submit">Save</button>
+        {% if planned %}
+        <button class="btn btn-danger" type="button" hx-delete="/plan/{{ day.isoformat() }}"
+                hx-target="#content" hx-swap="innerHTML">Delete</button>
+        {% endif %}
+        <button class="btn" type="button" hx-get="/month/{{ day.year }}/{{ day.month }}/content"
+                hx-target="#content" hx-swap="innerHTML">Cancel</button>
+      </div>
     </form>
   </td>
 </tr>
