@@ -1,17 +1,19 @@
 <header>
   <nav class="month-nav">
-    <a href="/month/{{ nav.prev[0] }}/{{ nav.prev[1] }}">&larr;</a>
+    <a class="nav-arrow" href="/month/{{ nav.prev[0] }}/{{ nav.prev[1] }}" title="Previous month">&larr;</a>
     <h1>{{ year }}-{{ '%02d' % month }}</h1>
-    <a href="/month/{{ nav.next[0] }}/{{ nav.next[1] }}">&rarr;</a>
-    <button class="refresh"
-            hx-post="/month/{{ year }}/{{ month }}/refresh"
-            hx-target="#content" hx-swap="innerHTML">⟳</button>
-    <a class="settings-link" href="/settings" title="Settings">⚙</a>
-    <form method="post" action="/logout" class="logout"><button type="submit" title="Log out">⎋</button></form>
+    <a class="nav-arrow" href="/month/{{ nav.next[0] }}/{{ nav.next[1] }}" title="Next month">&rarr;</a>
+    <div class="toolbar">
+      <button class="btn btn-icon"
+              hx-post="/month/{{ year }}/{{ month }}/refresh"
+              hx-target="#content" hx-swap="innerHTML" title="Refresh">⟳</button>
+      <a class="btn btn-icon" href="/settings" title="Settings">⚙</a>
+      <form method="post" action="/logout"><button class="btn btn-icon" type="submit" title="Log out">⎋</button></form>
+    </div>
   </nav>
   {% if fetched_at %}<p class="meta">praise data as of {{ fetched_at }}</p>{% endif %}
-  {% if fetch_error %}<p class="error">⚠ praise fetch failed: {{ fetch_error }}</p>{% endif %}
-  {% for d in stats.discrepancies %}<p class="warn">⚠ {{ d }}</p>{% endfor %}
+  {% if fetch_error %}<p class="banner error">⚠ praise fetch failed: {{ fetch_error }}</p>{% endif %}
+  {% for d in stats.discrepancies %}<p class="banner warn">⚠ {{ d }}</p>{% endfor %}
 </header>
 
 <section class="stats">
