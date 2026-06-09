@@ -5,7 +5,12 @@ exceeds its active-session cap, so the multi-tenant server must log in once per
 user and replay the cookie. These tests pin that behaviour.
 """
 
-from praison.praise.session import PraiseSession, SessionState
+from praison.praise.session import (
+    PraiseSession,
+    SessionState,
+    dump_session_state,
+    load_session_state,
+)
 
 
 class _FakePraise(PraiseSession):
@@ -45,3 +50,14 @@ def test_without_state_logs_in_every_time() -> None:
         with _FakePraise("praise.example", "e", "p", session_path=None):
             pass
     assert _FakePraise.login_calls == 3
+
+
+def test_session_state_survives_serialization() -> None:
+    # Persisting the session to the database (and restoring after a restart)
+    # must preserve the cookie and build version so no fresh login is needed.
+    state = SessionState(build_version="v1")
+    state.cookies.set("session_id", "tok")
+
+    restored = load_session_state(dump_session_state(state))
+    assert restored.build_version == "v1"
+    assert restored.cookies.get("session_id") == "tok"

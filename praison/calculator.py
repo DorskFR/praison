@@ -257,6 +257,8 @@ def _planned_day_type(planned: PlannedDay, default: DayType) -> DayType:
         return DayType.HALF_DAY_PAID_LEAVE
     if planned.is_paid_leave:
         return DayType.PAID_LEAVE
+    if planned.is_unpaid_leave:
+        return DayType.UNPAID_LEAVE
     return default
 
 

@@ -5,6 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>praison</title>
   <link rel="stylesheet" href="/static/style.css">
+  <script>
+    // Apply the saved theme before first paint to avoid a flash.
+    document.documentElement.dataset.theme =
+      localStorage.getItem("praison-theme") || "dark";
+    function toggleTheme() {
+      var next = document.documentElement.dataset.theme === "dark" ? "sepia" : "dark";
+      document.documentElement.dataset.theme = next;
+      localStorage.setItem("praison-theme", next);
+    }
+  </script>
   <script src="https://unpkg.com/htmx.org@2.0.4" crossorigin="anonymous"></script>
 </head>
 <body>

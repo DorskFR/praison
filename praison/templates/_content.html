@@ -6,55 +6,45 @@
     <div class="toolbar">
       <button class="btn btn-icon"
               hx-post="/month/{{ year }}/{{ month }}/refresh"
-              hx-target="#content" hx-swap="innerHTML" title="Refresh">⟳</button>
+              hx-target="#content" hx-swap="innerHTML"
+              title="{% if fetched_at %}Praise data as of {{ fetched_at }} — {% endif %}Refresh (max once per minute)">⟳</button>
+      <button class="btn btn-icon" type="button" onclick="toggleTheme()" title="Toggle theme">◑</button>
       <a class="btn btn-icon" href="/settings" title="Settings">⚙</a>
       <form method="post" action="/logout"><button class="btn btn-icon" type="submit" title="Log out">⎋</button></form>
     </div>
   </nav>
-  {% if fetched_at %}<p class="meta">praise data as of {{ fetched_at }}</p>{% endif %}
   {% if fetch_error %}<p class="banner error">⚠ praise fetch failed: {{ fetch_error }}</p>{% endif %}
   {% for d in stats.discrepancies %}<p class="banner warn">⚠ {{ d }}</p>{% endfor %}
 </header>
 
 <section class="stats">
   <div class="stat">
-    <span class="label">WFH</span>
-    <span class="value">{{ stats.total_wfh_hours|hours }} / {{ stats.wfh_quota_hours|hours }}</span>
-    <span class="sub {% if stats.wfh_over_quota > 0 %}bad{% else %}good{% endif %}">
-      {% if stats.wfh_over_quota > 0 %}over by {{ stats.wfh_over_quota|hours }}{% else %}{{ stats.wfh_remaining|hours }} left{% endif %}
-    </span>
+    <span class="label">Office now</span>
+    <span class="value">{% if summary %}{{ summary.on_site_minutes|dur }}{% else %}–{% endif %}</span>
+    <span class="sub">plan {{ stats.total_office_hours|hours }} / req {{ stats.office_required_hours|hours }}</span>
   </div>
   <div class="stat">
-    <span class="label">Office</span>
-    <span class="value">{{ stats.total_office_hours|hours }} / {{ stats.office_required_hours|hours }}</span>
-    <span class="sub {% if stats.office_deficit > 0 %}bad{% else %}good{% endif %}">
-      {% if stats.office_deficit > 0 %}{{ stats.office_deficit|hours }} short{% else %}met ✓{% endif %}
-    </span>
+    <span class="label">WFH now</span>
+    <span class="value">{% if summary %}{{ summary.remote_minutes|dur }}{% else %}–{% endif %}</span>
+    <span class="sub {% if stats.wfh_over_quota > 0 %}bad{% else %}good{% endif %}">plan {{ stats.total_wfh_hours|hours }} / quota {{ stats.wfh_quota_hours|hours }}</span>
   </div>
   <div class="stat">
-    <span class="label">EoM</span>
+    <span class="label">Balance now</span>
+    <span class="value {% if stats.balance_minutes < 0 %}bad{% else %}good{% endif %}">{{ stats.balance_minutes|dur }}</span>
+    <span class="sub">{% if stats.suggested_clockout_time %}leave at {{ stats.suggested_clockout_time }}{% endif %}</span>
+  </div>
+  <div class="stat">
+    <span class="label">EoM (planned)</span>
     <span class="value {% if stats.total_deficit > 0 %}bad{% else %}good{% endif %}">
       {% if stats.total_deficit > 0 %}-{{ stats.total_deficit|hours }}{% else %}+{{ (-stats.total_deficit)|hours }}{% endif %}
     </span>
     <span class="sub">{% if stats.total_deficit > 0 %}deficit{% else %}surplus{% endif %}</span>
   </div>
   <div class="stat">
-    <span class="label">Balance</span>
-    <span class="value {% if stats.balance_minutes < 0 %}bad{% else %}good{% endif %}">{{ stats.balance_minutes|dur }}</span>
-    {% if stats.suggested_clockout_time %}<span class="sub">leave at {{ stats.suggested_clockout_time }}</span>{% endif %}
-  </div>
-  <div class="stat">
     <span class="label">Days</span>
     <span class="value">{{ stats.working_days }}</span>
     <span class="sub">{{ stats.paid_leave_days }} leave</span>
   </div>
-  {% if summary %}
-  <div class="stat">
-    <span class="label">Praise says</span>
-    <span class="value">{{ summary.on_site_minutes|dur }} 🏢 {{ summary.remote_minutes|dur }} 🏠</span>
-    <span class="sub">req on-site {{ summary.required_on_site_minutes|dur }}</span>
-  </div>
-  {% endif %}
 </section>
 
 <table class="month">
@@ -65,7 +55,7 @@
     {% for r in records %}
     <tr id="row-{{ r.date.isoformat() }}"
         class="{{ r.day_type.value }}{% if r.date == today %} today{% endif %}{% if r.date in planned_dates %} planned{% endif %}{% if r.date > today %} future{% endif %}"
-        {% if r.date > today and r.day_type in (DayType.WORKING_DAY, DayType.PAID_LEAVE, DayType.HALF_DAY_PAID_LEAVE) or r.date > today and r.date in planned_dates %}
+        {% if r.date > today and r.day_type in (DayType.WORKING_DAY, DayType.PAID_LEAVE, DayType.HALF_DAY_PAID_LEAVE, DayType.UNPAID_LEAVE) or r.date > today and r.date in planned_dates %}
         hx-get="/plan/{{ r.date.isoformat() }}" hx-target="#row-{{ r.date.isoformat() }}" hx-swap="outerHTML"
         {% endif %}>
       <td>{{ r.date.day }} {{ r.date.strftime('%a') }}</td>

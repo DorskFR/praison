@@ -26,11 +26,19 @@ from praison.parser import (
     parse_summary,
     parse_timesheet,
 )
-from praison.praise.session import PraiseSession, SessionState, normalize_url, verify_credentials
+from praison.praise.session import (
+    PraiseSession,
+    SessionState,
+    dump_session_state,
+    load_session_state,
+    normalize_url,
+    verify_credentials,
+)
 
 logger = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 600  # auto refresh praise data every 10 minutes
+REFRESH_MIN_INTERVAL_SECONDS = 60  # ignore manual refreshes more frequent than this
 
 # Defaults for a newly registered user; both are editable per user via /settings.
 DEFAULT_HOURS_PER_DAY = 8
@@ -53,17 +61,49 @@ class _NotAuthenticatedError(Exception):
 class PraiseCache:
     """Per-user server-side cache of Praise timesheets so page loads never block."""
 
-    def __init__(self) -> None:
+    def __init__(self, db: Store) -> None:
+        self._db = db
         self._lock = threading.Lock()
         self._months: dict[tuple[str, int, int], CachedMonth] = {}
         self._location_categories: dict[str, dict[str, str]] = {}
         self._last_error: dict[str, str | None] = {}
         # Per-user Praise cookie, reused across fetches so we log in once per
         # user instead of on every fetch (which evicts their browser sessions).
+        # Persisted to the database so a restart reuses the cookie too.
         self._sessions: dict[str, SessionState] = {}
 
     def last_error(self, user_id: str) -> str | None:
         return self._last_error.get(user_id)
+
+    def clear_user(self, user_id: str) -> None:
+        """Drop a user's cached months and Praise session (called on logout)."""
+        with self._lock:
+            self._sessions.pop(user_id, None)
+            self._months = {k: v for k, v in self._months.items() if k[0] != user_id}
+        with contextlib.suppress(Exception):
+            self._db.delete_praise_session(user_id)
+
+    def _state_for(self, user_id: str) -> SessionState:
+        with self._lock:
+            cached = self._sessions.get(user_id)
+        if cached is not None:
+            return cached
+        state = SessionState()
+        row = self._db.get_praise_session(user_id)
+        if row:
+            with contextlib.suppress(Exception):  # tampered/rotated key -> fresh login
+                state = load_session_state(decrypt(row[0]))
+        with self._lock:
+            self._sessions[user_id] = state
+        return state
+
+    def _persist_state(self, user_id: str, state: SessionState) -> None:
+        with self._lock:
+            self._sessions[user_id] = state
+        with contextlib.suppress(Exception):
+            self._db.save_praise_session(
+                user_id, encrypt(dump_session_state(state)), state.build_version
+            )
 
     def get_month(
         self, user: User, password: str, year: int, month: int, *, force: bool = False
@@ -72,6 +112,10 @@ class PraiseCache:
         with self._lock:
             cached = self._months.get(key)
             if cached and not force and time.time() - cached.fetched_at < CACHE_TTL_SECONDS:
+                return cached
+            # Rate-limit manual refreshes: a forced refetch within the minimum
+            # interval just returns the existing data.
+            if cached and force and time.time() - cached.fetched_at < REFRESH_MIN_INTERVAL_SECONDS:
                 return cached
         try:
             fresh = self._fetch(user, password, year, month)
@@ -85,8 +129,7 @@ class PraiseCache:
         return fresh
 
     def _fetch(self, user: User, password: str, year: int, month: int) -> CachedMonth:
-        with self._lock:
-            state = self._sessions.setdefault(user.id, SessionState())
+        state = self._state_for(user.id)
         with PraiseSession(
             user.praise_url, user.praise_email, password, session_path=None, state=state
         ) as praise:
@@ -99,6 +142,8 @@ class PraiseCache:
                     logger.warning("could not fetch locations, using name heuristics: %s", exc)
                     self._location_categories[user.id] = {}
             data = praise.get_timesheet(year, month)
+        # Persist the (possibly refreshed) cookie so a restart reuses it.
+        self._persist_state(user.id, state)
         records = parse_timesheet(
             data,
             location_categories=self._location_categories[user.id],
@@ -117,7 +162,7 @@ def create_app(db: Store | None = None) -> FastAPI:
     app = FastAPI(title="praison")
     app.add_middleware(SessionMiddleware, secret_key=session_secret(), same_site="lax")
     db = db or create_database()
-    cache = PraiseCache()
+    cache = PraiseCache(db)
     templates = Jinja2Templates(directory=_TEMPLATES_DIR)
     templates.env.filters["dur"] = lambda minutes: str(Duration(int(minutes)))
     templates.env.filters["hours"] = lambda h: str(Duration(round(h * 60)))
@@ -254,6 +299,10 @@ def create_app(db: Store | None = None) -> FastAPI:
 
     @app.post("/logout")
     def logout(request: Request) -> RedirectResponse:
+        # Clear the stored Praise session too, so the next login mints a fresh one.
+        user_id = request.session.get("user_id")
+        if user_id:
+            cache.clear_user(user_id)
         request.session.clear()
         return RedirectResponse("/login", status_code=303)
 
@@ -352,14 +401,18 @@ def create_app(db: Store | None = None) -> FastAPI:
         note: Annotated[str, Form()] = "",
     ) -> HTMLResponse:
         target = date.fromisoformat(day)
+        # Full-day and unpaid leave are whole days off, so worked hours are zeroed.
+        # Half-day leave keeps any hours entered for the half that is worked.
+        on_leave = leave in ("full", "unpaid")
         db.save_planned_day(
             user.id,
             PlannedDay(
                 date=target,
-                office_minutes=_parse_hours_to_minutes(office_hours),
-                remote_minutes=_parse_hours_to_minutes(wfh_hours),
+                office_minutes=0 if on_leave else _parse_hours_to_minutes(office_hours),
+                remote_minutes=0 if on_leave else _parse_hours_to_minutes(wfh_hours),
                 is_paid_leave=leave in ("full", "half"),
                 is_half_day_leave=leave == "half",
+                is_unpaid_leave=leave == "unpaid",
                 note=note.strip(),
             ),
         )

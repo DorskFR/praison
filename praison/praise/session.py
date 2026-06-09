@@ -5,6 +5,7 @@ X-Build-Version header from /api/health, transparent recovery from stale
 build version (426) and rejected session (401).
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
 from http.cookiejar import LoadError, LWPCookieJar
@@ -13,7 +14,7 @@ from types import TracebackType
 from typing import Any, Self
 
 import requests
-from requests.cookies import RequestsCookieJar
+from requests.cookies import RequestsCookieJar, cookiejar_from_dict
 
 from praison.config import DEFAULT_SESSION_PATH
 from praison.errors import InvalidPraiseLoginError, PraiseApiError
@@ -37,6 +38,24 @@ class SessionState:
 
     cookies: RequestsCookieJar = field(default_factory=RequestsCookieJar)
     build_version: str | None = None
+
+
+def dump_session_state(state: SessionState) -> str:
+    """Serialize a SessionState to a JSON string for storage at rest."""
+    return json.dumps(
+        {
+            "cookies": requests.utils.dict_from_cookiejar(state.cookies),
+            "build_version": state.build_version,
+        }
+    )
+
+
+def load_session_state(blob: str) -> SessionState:
+    """Rebuild a SessionState from a string produced by :func:`dump_session_state`."""
+    data = json.loads(blob)
+    cookies = RequestsCookieJar()
+    cookies.update(cookiejar_from_dict(data.get("cookies") or {}))
+    return SessionState(cookies=cookies, build_version=data.get("build_version"))
 
 
 def normalize_url(base_url: str) -> str:
