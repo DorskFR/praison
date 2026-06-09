@@ -9,9 +9,9 @@ COPY pyproject.toml uv.lock README.md ./
 COPY praison ./praison
 RUN uv sync --frozen --no-dev
 
-EXPOSE 8000
+EXPOSE 24601
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD ["uv", "run", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+    CMD ["uv", "run", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:24601/health')"]
 
 CMD ["uv", "run", "--no-sync", "python", "-m", "praison"]

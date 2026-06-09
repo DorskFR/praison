@@ -2,7 +2,7 @@ services:
   praison:
     build: .
     ports:
-      - "8000:8000"
+      - "24601:24601"
     environment:
       DB_HOST: database
       DB_NAME: praison

@@ -87,7 +87,9 @@ def main() -> None:
 
     db = create_database()
     _seed_legacy_user(db)
-    uvicorn.run(create_app(db=db), host="0.0.0.0", port=8000)  # noqa: S104
+    # 24601 — Jean Valjean's prisoner number. Override with PORT if it clashes.
+    port = int(os.environ.get("PORT", "24601"))
+    uvicorn.run(create_app(db=db), host="0.0.0.0", port=port)  # noqa: S104
 
 
 if __name__ == "__main__":
