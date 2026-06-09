@@ -1,13 +1,11 @@
-<div class="modal-backdrop" onclick="if(event.target===this)this.closest('#modal').innerHTML=''">
+<div class="modal-backdrop">
   <div class="modal" role="dialog" aria-modal="true">
     <div class="modal-head">
       <h2>{{ day.strftime('%A %-d %b %Y') }}</h2>
-      <button class="btn btn-icon" type="button" title="Close"
-              onclick="document.getElementById('modal').innerHTML=''">
+      <button class="btn btn-icon" type="button" title="Close" data-action="close-modal">
         <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
-    <form hx-post="/plan/{{ day.isoformat() }}" hx-target="#content" hx-swap="innerHTML"
-          hx-on::after-request="document.getElementById('modal').innerHTML=''">
+    <form hx-post="/plan/{{ day.isoformat() }}" hx-target="#content" hx-swap="innerHTML">
       <div class="plan-grid">
         <label class="field">Office hours
           <input type="text" name="office_hours" inputmode="decimal"
@@ -28,12 +26,10 @@
       </div>
       <p class="plan-hint">Full-day or unpaid leave clears the worked hours for the day.</p>
       <div class="plan-actions">
-        <button class="btn" type="button"
-                onclick="document.getElementById('modal').innerHTML=''">Cancel</button>
+        <button class="btn" type="button" data-action="close-modal">Cancel</button>
         {% if planned %}
         <button class="btn btn-danger" type="button" hx-delete="/plan/{{ day.isoformat() }}"
-                hx-target="#content" hx-swap="innerHTML"
-                hx-on::after-request="document.getElementById('modal').innerHTML=''">Delete</button>
+                hx-target="#content" hx-swap="innerHTML">Delete</button>
         {% endif %}
         <button class="btn btn-primary" type="submit">Save</button>
       </div>

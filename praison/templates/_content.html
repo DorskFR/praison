@@ -11,7 +11,7 @@
               hx-target="#content" hx-swap="innerHTML"
               title="{% if fetched_at %}Praise data as of {{ fetched_at }} — {% endif %}Refresh (max once per minute)">
         <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
-      <button class="btn btn-icon" type="button" onclick="toggleTheme()" title="Toggle theme">
+      <button class="btn btn-icon" type="button" data-action="toggle-theme" title="Toggle theme">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none"/></svg></button>
       <button class="btn btn-icon" type="button" title="Settings"
               hx-get="/settings?year={{ year }}&month={{ month }}"

@@ -2,8 +2,10 @@
 
 import contextlib
 import logging
+import os
 import threading
 import time
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -19,7 +21,7 @@ from praison.calculator import calculate_month_stats, merge_actual_and_planned
 from praison.crypto import decrypt, encrypt, session_secret
 from praison.database import Store, create_database
 from praison.duration import JST, Duration
-from praison.errors import InvalidPraiseLoginError
+from praison.errors import InvalidPraiseLoginError, PraiseUrlNotAllowedError
 from praison.models import DayRecord, DayType, MonthStats, PlannedDay, ServerSummary, User
 from praison.parser import (
     build_location_categories,
@@ -34,6 +36,7 @@ from praison.praise.session import (
     normalize_url,
     verify_credentials,
 )
+from praison.security import assert_praise_url_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +48,57 @@ DEFAULT_HOURS_PER_DAY = 8
 DEFAULT_WFH_PER_BUSINESS_DAY = 1.0
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+# Login throttling: at most this many attempts per client IP per window.
+LOGIN_MAX_ATTEMPTS = int(os.environ.get("PRAISON_LOGIN_MAX_ATTEMPTS", "10"))
+LOGIN_WINDOW_SECONDS = int(os.environ.get("PRAISON_LOGIN_WINDOW_SECONDS", "300"))
+
+# All scripts/styles are served from this origin (htmx is vendored locally and
+# there are no inline scripts), so the policy can stay tight. Inline styles are
+# tolerated; they cannot exfiltrate credentials the way injected script can.
+_CSP = (
+    "default-src 'self'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'; "
+    "img-src 'self' data:; "
+    "style-src 'self' 'unsafe-inline'; "
+    "script-src 'self'; "
+    "connect-src 'self'; "
+    "object-src 'none'"
+)
+
+
+def _https_only() -> bool:
+    """Whether session cookies get the Secure flag. On by default; set
+    ``PRAISON_HTTPS_ONLY=false`` for plain-HTTP local runs (TLS terminates at the
+    proxy in production, so the app itself sees HTTP either way)."""
+    return os.environ.get("PRAISON_HTTPS_ONLY", "true").strip().lower() not in (
+        "false",
+        "0",
+        "no",
+    )
+
+
+class _LoginRateLimiter:
+    """Fixed-window per-IP throttle for the login endpoint."""
+
+    def __init__(self, max_attempts: int, window_seconds: int) -> None:
+        self._max = max_attempts
+        self._window = window_seconds
+        self._lock = threading.Lock()
+        self._hits: dict[str, deque[float]] = defaultdict(deque)
+
+    def allow(self, client: str) -> bool:
+        now = time.time()
+        with self._lock:
+            hits = self._hits[client]
+            while hits and now - hits[0] > self._window:
+                hits.popleft()
+            if len(hits) >= self._max:
+                return False
+            hits.append(now)
+            return True
 
 
 @dataclass
@@ -160,9 +214,28 @@ def _month_nav(year: int, month: int) -> dict[str, Any]:
 
 def create_app(db: Store | None = None) -> FastAPI:
     app = FastAPI(title="praison")
-    app.add_middleware(SessionMiddleware, secret_key=session_secret(), same_site="lax")
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=session_secret(),
+        same_site="lax",
+        https_only=_https_only(),
+    )
+
+    @app.middleware("http")
+    async def _add_security_headers(request: Request, call_next: Any) -> Response:
+        response: Response = await call_next(request)
+        response.headers.setdefault("Content-Security-Policy", _CSP)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=63072000; includeSubDomains"
+        )
+        return response
+
     db = db or create_database()
     cache = PraiseCache(db)
+    login_limiter = _LoginRateLimiter(LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW_SECONDS)
     templates = Jinja2Templates(directory=_TEMPLATES_DIR)
     templates.env.filters["dur"] = lambda minutes: str(Duration(int(minutes)))
     templates.env.filters["hours"] = lambda h: str(Duration(round(h * 60)))
@@ -266,8 +339,17 @@ def create_app(db: Store | None = None) -> FastAPI:
         email: Annotated[str, Form()],
         password: Annotated[str, Form()],
     ) -> Response:
+        client = request.client.host if request.client else "unknown"
+        if not login_limiter.allow(client):
+            return _login_error(
+                request, "Too many login attempts. Please wait and try again.", status=429
+            )
         url = normalize_url(praise_url)
         email = email.strip()
+        try:
+            assert_praise_url_allowed(url)
+        except PraiseUrlNotAllowedError:
+            return _login_error(request, "That Praise server is not permitted here.")
         try:
             verify_credentials(url, email, password)
         except InvalidPraiseLoginError:
@@ -292,9 +374,9 @@ def create_app(db: Store | None = None) -> FastAPI:
         request.session["praise_pw"] = encrypt(password)
         return RedirectResponse("/", status_code=303)
 
-    def _login_error(request: Request, message: str) -> HTMLResponse:
+    def _login_error(request: Request, message: str, status: int = 401) -> HTMLResponse:
         return templates.TemplateResponse(
-            request, "login.html", {"request": request, "error": message}, status_code=401
+            request, "login.html", {"request": request, "error": message}, status_code=status
         )
 
     @app.post("/logout")

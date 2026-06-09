@@ -8,6 +8,9 @@ services:
       DB_NAME: praison
       DB_USER: postgres
       DB_PASS: postgres
+      # This compose stack serves plain HTTP on localhost, so the session cookie
+      # cannot carry the Secure flag. In production (HTTPS at the proxy) drop this.
+      PRAISON_HTTPS_ONLY: "false"
     depends_on:
       database:
         condition: service_healthy
