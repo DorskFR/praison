@@ -228,10 +228,12 @@ def create_app(db: Store | None = None) -> FastAPI:
             server_summary=summary,
         )
         planned_dates = {p.date for p in planned}
-        # What we parsed as actually clocked so far (past + today), to compare
-        # against Praise's own summary; a gap means our parsing drifted.
-        recorded_office = sum(r.office_minutes for r in merged if r.date <= today)
-        recorded_remote = sum(r.remote_minutes for r in merged if r.date <= today)
+        # What we parsed from Praise's own day records, to compare against
+        # Praise's summary; a gap means our parsing drifted. Use actual_records
+        # (not merged) so we never compare planned data against live data —
+        # merged substitutes planned values for days Praise hasn't recorded yet.
+        recorded_office = sum(r.office_minutes for r in actual_records if r.date <= today)
+        recorded_remote = sum(r.remote_minutes for r in actual_records if r.date <= today)
         office_clocked_mismatch = (
             summary is not None and abs(summary.on_site_minutes - recorded_office) > 1
         )
@@ -322,31 +324,59 @@ def create_app(db: Store | None = None) -> FastAPI:
 
     @app.get("/settings", response_class=HTMLResponse)
     def settings_form(
-        request: Request, user: Annotated[User, Depends(require_user)]
+        request: Request,
+        user: Annotated[User, Depends(require_user)],
+        year: int | None = None,
+        month: int | None = None,
     ) -> HTMLResponse:
+        now = datetime.now(JST)
         return templates.TemplateResponse(
-            request, "settings.html", {"request": request, "user": user}
+            request,
+            "_settings_form.html",
+            {
+                "request": request,
+                "user": user,
+                "year": year or now.year,
+                "month": month or now.month,
+            },
         )
 
     @app.post("/settings", response_class=HTMLResponse)
     def settings_save(
         request: Request,
         user: Annotated[User, Depends(require_user)],
+        password: Annotated[str, Depends(require_password)],
         hours_per_day: Annotated[str, Form()],
         wfh_hours_per_business_day: Annotated[str, Form()],
+        year: Annotated[int, Form()],
+        month: Annotated[int, Form()],
     ) -> Response:
         try:
             hours = int(float(hours_per_day))
             wfh = float(wfh_hours_per_business_day)
         except ValueError:
+            # Re-render the modal (not #content) so the error stays in the dialog.
             return templates.TemplateResponse(
                 request,
-                "settings.html",
-                {"request": request, "user": user, "error": "Please enter valid numbers."},
+                "_settings_form.html",
+                {
+                    "request": request,
+                    "user": user,
+                    "year": year,
+                    "month": month,
+                    "error": "Please enter valid numbers.",
+                },
                 status_code=400,
+                headers={"HX-Retarget": "#modal", "HX-Reswap": "innerHTML"},
             )
         db.update_settings(user.id, hours, wfh)
-        return RedirectResponse("/", status_code=303)
+        # Settings affect the month calculations, so re-render the current month.
+        user = db.get_user_by_id(user.id) or user
+        return templates.TemplateResponse(
+            request,
+            "_content.html",
+            month_context(request, user, password, year, month),
+        )
 
     @app.get("/", response_class=HTMLResponse)
     def index(user: Annotated[User, Depends(require_user)]) -> RedirectResponse:  # noqa: ARG001
