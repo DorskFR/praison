@@ -5,17 +5,35 @@ X-Build-Version header from /api/health, transparent recovery from stale
 build version (426) and rejected session (401).
 """
 
+from dataclasses import dataclass, field
 from http.cookiejar import LoadError, LWPCookieJar
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
 
 import requests
+from requests.cookies import RequestsCookieJar
 
 from praison.config import DEFAULT_SESSION_PATH
 from praison.errors import InvalidPraiseLoginError, PraiseApiError
 
 _TIMEOUT = 30  # seconds
+
+
+@dataclass
+class SessionState:
+    """In-memory cookie + build-version store, reused across PraiseSession
+    instances.
+
+    The multi-tenant web server keeps one of these per user so it logs in to
+    Praise once and replays the cookie on every fetch, instead of logging in
+    afresh each time. A fresh login mints a new Praise session, and Praise caps
+    active sessions per user and evicts the oldest once exceeded -- so repeated
+    logins silently sign the user out of their real browser sessions.
+    """
+
+    cookies: RequestsCookieJar = field(default_factory=RequestsCookieJar)
+    build_version: str | None = None
 
 
 def normalize_url(base_url: str) -> str:
@@ -39,13 +57,16 @@ class PraiseSession:
         email: str,
         password: str,
         session_path: Path | None = DEFAULT_SESSION_PATH,
+        state: SessionState | None = None,
     ) -> None:
         self._base_url = normalize_url(base_url)
         self._email = email
         self._password = password
-        # session_path=None keeps cookies in memory only (no disk persistence),
-        # used for per-user web sessions in the multi-tenant server.
+        # session_path persists cookies to disk (CLI). state holds them in
+        # memory across instances (multi-tenant web server, see SessionState).
+        # When state is given it takes precedence and nothing touches disk.
         self._session_path = session_path
+        self._state = state
         self._session: requests.Session | None = None
 
     @property
@@ -148,6 +169,15 @@ class PraiseSession:
     def _load_session(self) -> bool:
         """Load persisted cookies and build version. Returns True if a usable
         session was restored. Missing/corrupt files mean a fresh login."""
+        if self._state is not None:
+            if len(self._state.cookies) == 0:
+                return False
+            self.session.cookies.update(self._state.cookies)
+            if self._state.build_version:
+                self.session.headers["X-Build-Version"] = self._state.build_version
+            else:
+                self._fetch_build_version()
+            return True
         if self._session_path is None or not self._session_path.is_file():
             return False
         jar = LWPCookieJar(str(self._session_path))
@@ -168,6 +198,12 @@ class PraiseSession:
 
     def _save_session(self) -> None:
         """Persist the current cookies (0600) and build version."""
+        if self._state is not None:
+            self._state.cookies.clear()
+            self._state.cookies.update(self.session.cookies)
+            version = self.session.headers.get("X-Build-Version")
+            self._state.build_version = str(version) if version else None
+            return
         if self._session_path is None:
             return
         self._session_path.parent.mkdir(parents=True, exist_ok=True)

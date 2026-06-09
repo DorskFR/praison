@@ -26,7 +26,7 @@ from praison.parser import (
     parse_summary,
     parse_timesheet,
 )
-from praison.praise.session import PraiseSession, normalize_url, verify_credentials
+from praison.praise.session import PraiseSession, SessionState, normalize_url, verify_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,9 @@ class PraiseCache:
         self._months: dict[tuple[str, int, int], CachedMonth] = {}
         self._location_categories: dict[str, dict[str, str]] = {}
         self._last_error: dict[str, str | None] = {}
+        # Per-user Praise cookie, reused across fetches so we log in once per
+        # user instead of on every fetch (which evicts their browser sessions).
+        self._sessions: dict[str, SessionState] = {}
 
     def last_error(self, user_id: str) -> str | None:
         return self._last_error.get(user_id)
@@ -82,8 +85,10 @@ class PraiseCache:
         return fresh
 
     def _fetch(self, user: User, password: str, year: int, month: int) -> CachedMonth:
+        with self._lock:
+            state = self._sessions.setdefault(user.id, SessionState())
         with PraiseSession(
-            user.praise_url, user.praise_email, password, session_path=None
+            user.praise_url, user.praise_email, password, session_path=None, state=state
         ) as praise:
             if user.id not in self._location_categories:
                 try:
