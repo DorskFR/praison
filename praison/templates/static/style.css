@@ -124,9 +124,12 @@ main { max-width: 760px; margin: 0 auto; padding: var(--sp-4) var(--sp-3) var(--
   stroke-linejoin: round;
 }
 
-.field { display: flex; flex-direction: column; gap: var(--sp-1); font-size: var(--fs-sm); color: var(--dim); }
+.field { display: flex; flex-direction: column; gap: var(--sp-1); font-size: var(--fs-sm); color: var(--dim); min-width: 0; }
 .field input,
 .field select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: var(--control-h);
   background: var(--bg);
   color: var(--fg);
