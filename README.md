@@ -17,7 +17,7 @@ That's the whole setup — one command, no files to mount, no keys to generate. 
 Or run the published image directly (no Postgres — falls back to SQLite stored in the volume):
 
 ```bash
-docker run -p 24601:24601 -v praison-data:/data ghcr.io/dorskfr/praison:latest
+docker run -d -p 24601:24601 -v praison-data:/data ghcr.io/dorskfr/praison:latest
 ```
 
 ## Run locally
