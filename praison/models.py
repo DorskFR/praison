@@ -114,6 +114,7 @@ class PlannedDay:
     remote_minutes: int
     is_paid_leave: bool = False
     is_half_day_leave: bool = False
+    is_unpaid_leave: bool = False
     note: str = ""
 
 

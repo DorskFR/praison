@@ -4,35 +4,26 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Fernet key (urlsafe-b64 32B) for credential encryption + session signing.
-      # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-      PRAISON_SECRET_KEY: ${PRAISON_SECRET_KEY}
-      # PRAISE_* below are optional: a legacy single-tenant deployment is migrated
-      # into the first user on startup. New users register through the login form.
-      PRAISE_URL: ${PRAISE_URL:-}
-      PRAISE_EMAIL: ${PRAISE_EMAIL:-}
-      PRAISE_PASSWORD: ${PRAISE_PASSWORD:-}
-      PRAISE_HOURS_PER_DAY: ${PRAISE_HOURS_PER_DAY:-8}
-      PRAISON_WFH_HOURS_PER_BUSINESS_DAY: ${PRAISON_WFH_HOURS_PER_BUSINESS_DAY:-1.5}
       DB_HOST: database
-      DB_NAME: ${DB_NAME:-praison}
-      DB_USER: ${DB_USER:-postgres}
-      DB_PASS: ${DB_PASS:-postgres}
+      DB_NAME: praison
+      DB_USER: postgres
+      DB_PASS: postgres
     depends_on:
       - database
     volumes:
-      # planning.db + cached praise session live under /data/praison
+      # Holds the encryption key, minted once on first start and reused after.
       - praison-data:/data
     restart: unless-stopped
 
   database:
     image: postgres:18-alpine
     environment:
-      POSTGRES_DB: ${DB_NAME:-praison}
-      POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASS:-postgres}
+      POSTGRES_DB: praison
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
     volumes:
-      - praison-db:/var/lib/postgresql/data
+      # postgres:18 stores data under a version subdirectory of this path.
+      - praison-db:/var/lib/postgresql
     restart: unless-stopped
 
 volumes:

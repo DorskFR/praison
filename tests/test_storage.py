@@ -69,6 +69,32 @@ def test_plans_are_scoped_per_user(store: SqliteStore) -> None:
     assert store.get_planned_day(bob.id, day) is not None  # bob untouched
 
 
+def test_unpaid_leave_is_persisted(store: SqliteStore) -> None:
+    user = store.create_user("https://p.example.com", "a@b.com", 8, 1.5)
+    day = date(2026, 6, 8)
+    store.save_planned_day(
+        user.id, PlannedDay(date=day, office_minutes=0, remote_minutes=0, is_unpaid_leave=True)
+    )
+    plan = store.get_planned_day(user.id, day)
+    assert plan is not None
+    assert plan.is_unpaid_leave is True
+    assert plan.is_paid_leave is False
+
+
+def test_praise_session_round_trip_and_clear(store: SqliteStore) -> None:
+    user = store.create_user("https://p.example.com", "a@b.com", 8, 1.5)
+    assert store.get_praise_session(user.id) is None
+
+    store.save_praise_session(user.id, "encrypted-cookie-blob", "v1")
+    assert store.get_praise_session(user.id) == ("encrypted-cookie-blob", "v1")
+
+    # Overwrite, then clear (as logout does).
+    store.save_praise_session(user.id, "blob2", None)
+    assert store.get_praise_session(user.id) == ("blob2", None)
+    store.delete_praise_session(user.id)
+    assert store.get_praise_session(user.id) is None
+
+
 def test_legacy_table_is_migrated_and_claimed(tmp_path: Path) -> None:
     # Simulate the old single-tenant schema (date-only primary key, no user_id).
     db_path = tmp_path / "planning.db"

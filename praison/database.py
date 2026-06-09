@@ -18,7 +18,12 @@ from typing import Protocol
 from praison.config import DEFAULT_DB_PATH
 from praison.models import PlannedDay, User
 
-_COLUMNS = "date, office_minutes, remote_minutes, is_paid_leave, is_half_day_leave, note"
+# Columns used by all CRUD. _BASE_COLUMNS predates the is_unpaid_leave column and
+# is only used by the one-time legacy table rebuild (that column is added by ALTER).
+_BASE_COLUMNS = "date, office_minutes, remote_minutes, is_paid_leave, is_half_day_leave, note"
+_COLUMNS = (
+    "date, office_minutes, remote_minutes, is_paid_leave, is_half_day_leave, is_unpaid_leave, note"
+)
 _USER_COLUMNS = "id, praise_url, praise_email, hours_per_day, wfh_hours_per_business_day"
 _LEGACY_USER_ID = "legacy"
 
@@ -31,7 +36,8 @@ def _row_to_planned(row: tuple) -> PlannedDay:
         remote_minutes=row[2],
         is_paid_leave=bool(row[3]),
         is_half_day_leave=bool(row[4]),
-        note=row[5] or "",
+        is_unpaid_leave=bool(row[5]),
+        note=row[6] or "",
     )
 
 
@@ -77,6 +83,14 @@ class Store(Protocol):
     ) -> None: ...
 
     def claim_legacy_plans(self, user_id: str) -> None: ...
+
+    def get_praise_session(self, user_id: str) -> tuple[str, str | None] | None: ...
+
+    def save_praise_session(
+        self, user_id: str, cookies: str, build_version: str | None
+    ) -> None: ...
+
+    def delete_praise_session(self, user_id: str) -> None: ...
 
     def save_planned_day(self, user_id: str, planned: PlannedDay) -> None: ...
 
@@ -127,6 +141,16 @@ _PLANNED_SQLITE = """
     )
 """
 
+# Per-user Praise session, persisted so a pod restart reuses the cookie instead
+# of minting a fresh login (which evicts the user's real browser sessions).
+_SESSIONS_SQLITE = """
+    CREATE TABLE IF NOT EXISTS praise_sessions (
+        user_id TEXT PRIMARY KEY,
+        cookies TEXT NOT NULL,
+        build_version TEXT
+    )
+"""
+
 
 class SqliteStore:
     """SQLite-backed store (local/standalone use)."""
@@ -153,10 +177,16 @@ class SqliteStore:
                 conn.execute("ALTER TABLE planned_days RENAME TO planned_days_legacy")
                 conn.execute(_PLANNED_SQLITE)
                 conn.execute(
-                    f"INSERT INTO planned_days (user_id, {_COLUMNS}) "  # noqa: S608
-                    f"SELECT '{_LEGACY_USER_ID}', {_COLUMNS} FROM planned_days_legacy"
+                    f"INSERT INTO planned_days (user_id, {_BASE_COLUMNS}) "  # noqa: S608
+                    f"SELECT '{_LEGACY_USER_ID}', {_BASE_COLUMNS} FROM planned_days_legacy"
                 )
                 conn.execute("DROP TABLE planned_days_legacy")
+            planned_cols = [row[1] for row in conn.execute("PRAGMA table_info(planned_days)")]
+            if "is_unpaid_leave" not in planned_cols:
+                conn.execute(
+                    "ALTER TABLE planned_days ADD COLUMN is_unpaid_leave INTEGER NOT NULL DEFAULT 0"
+                )
+            conn.execute(_SESSIONS_SQLITE)
             conn.commit()
 
     def create_user(
@@ -236,7 +266,7 @@ class SqliteStore:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 f"INSERT OR REPLACE INTO planned_days (user_id, {_COLUMNS}) "  # noqa: S608
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     user_id,
                     planned.date.isoformat(),
@@ -244,9 +274,33 @@ class SqliteStore:
                     planned.remote_minutes,
                     1 if planned.is_paid_leave else 0,
                     1 if planned.is_half_day_leave else 0,
+                    1 if planned.is_unpaid_leave else 0,
                     planned.note,
                 ),
             )
+            conn.commit()
+
+    def get_praise_session(self, user_id: str) -> tuple[str, str | None] | None:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT cookies, build_version FROM praise_sessions WHERE user_id = ?",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return (row[0], row[1]) if row else None
+
+    def save_praise_session(self, user_id: str, cookies: str, build_version: str | None) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO praise_sessions (user_id, cookies, build_version) "
+                "VALUES (?, ?, ?)",
+                (user_id, cookies, build_version),
+            )
+            conn.commit()
+
+    def delete_praise_session(self, user_id: str) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM praise_sessions WHERE user_id = ?", (user_id,))
             conn.commit()
 
     def get_planned_day(self, user_id: str, target_date: date) -> PlannedDay | None:
@@ -304,6 +358,14 @@ _PLANNED_PG = """
     )
 """
 
+_SESSIONS_PG = """
+    CREATE TABLE IF NOT EXISTS praise_sessions (
+        user_id TEXT PRIMARY KEY,
+        cookies TEXT NOT NULL,
+        build_version TEXT
+    )
+"""
+
 
 class PostgresStore:
     """Postgres-backed store (deployed use)."""
@@ -339,6 +401,11 @@ class PostgresStore:
                 cur.execute("ALTER TABLE planned_days DROP CONSTRAINT IF EXISTS planned_days_pkey")
                 cur.execute("ALTER TABLE planned_days ADD PRIMARY KEY (user_id, date)")
                 cur.execute("ALTER TABLE planned_days ALTER COLUMN user_id DROP DEFAULT")
+            cur.execute(
+                "ALTER TABLE planned_days ADD COLUMN IF NOT EXISTS "
+                "is_unpaid_leave BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            cur.execute(_SESSIONS_PG)
             conn.commit()
 
     def create_user(
@@ -419,12 +486,13 @@ class PostgresStore:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 f"INSERT INTO planned_days (user_id, {_COLUMNS}) "  # noqa: S608
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (user_id, date) DO UPDATE SET "
                 "office_minutes = EXCLUDED.office_minutes, "
                 "remote_minutes = EXCLUDED.remote_minutes, "
                 "is_paid_leave = EXCLUDED.is_paid_leave, "
                 "is_half_day_leave = EXCLUDED.is_half_day_leave, "
+                "is_unpaid_leave = EXCLUDED.is_unpaid_leave, "
                 "note = EXCLUDED.note",
                 (
                     user_id,
@@ -433,6 +501,7 @@ class PostgresStore:
                     planned.remote_minutes,
                     planned.is_paid_leave,
                     planned.is_half_day_leave,
+                    planned.is_unpaid_leave,
                     planned.note,
                 ),
             )
@@ -464,4 +533,29 @@ class PostgresStore:
                 "DELETE FROM planned_days WHERE user_id = %s AND date = %s",
                 (user_id, target_date),
             )
+            conn.commit()
+
+    def get_praise_session(self, user_id: str) -> tuple[str, str | None] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT cookies, build_version FROM praise_sessions WHERE user_id = %s",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            return (row[0], row[1]) if row else None
+
+    def save_praise_session(self, user_id: str, cookies: str, build_version: str | None) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO praise_sessions (user_id, cookies, build_version) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (user_id) DO UPDATE SET "
+                "cookies = EXCLUDED.cookies, build_version = EXCLUDED.build_version",
+                (user_id, cookies, build_version),
+            )
+            conn.commit()
+
+    def delete_praise_session(self, user_id: str) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM praise_sessions WHERE user_id = %s", (user_id,))
             conn.commit()
