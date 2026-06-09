@@ -7,6 +7,9 @@ Fernet key); for local/standalone use a key is generated once and persisted
 0600 under the config dir.
 """
 
+import base64
+import hashlib
+import hmac
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -16,6 +19,7 @@ from cryptography.fernet import Fernet
 from praison.config import DEFAULT_CONFIG_DIR
 
 _SECRET_ENV = "PRAISON_SECRET_KEY"  # noqa: S105 - env var name, not a secret
+_SESSION_SECRET_ENV = "PRAISON_SESSION_SECRET"  # noqa: S105 - env var name, not a secret
 DEFAULT_KEY_PATH = DEFAULT_CONFIG_DIR / "secret.key"
 
 
@@ -49,5 +53,15 @@ def decrypt(token: str) -> str:
 
 
 def session_secret() -> str:
-    """Signing secret for the praison web session cookie (same key material)."""
-    return _load_or_create_key().decode()
+    """Signing secret for the praison web session cookie.
+
+    Kept cryptographically separate from the Fernet encryption key: an explicit
+    ``PRAISON_SESSION_SECRET`` wins, otherwise it is derived from the master key
+    via a keyed hash with a domain-separation label. A leaked cookie-signing
+    secret therefore does not reveal the key used to encrypt credentials at rest.
+    """
+    override = os.environ.get(_SESSION_SECRET_ENV)
+    if override:
+        return override
+    derived = hmac.new(_load_or_create_key(), b"praison-session-cookie-v1", hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(derived).decode()

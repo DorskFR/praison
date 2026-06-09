@@ -11,3 +11,7 @@ class InvalidPraiseLoginError(PraisonError):
 
 class PraiseApiError(PraisonError):
     """Raised when a Praise API call fails."""
+
+
+class PraiseUrlNotAllowedError(PraisonError):
+    """Raised when a submitted Praise URL is not in the configured allowlist."""
