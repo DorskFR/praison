@@ -6,3 +6,6 @@ venv/
 .env
 *.db
 .env.local
+
+# Private agent config — contains homelab/infra details, never publish
+.claude/
