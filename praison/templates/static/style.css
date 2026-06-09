@@ -112,6 +112,18 @@ main { max-width: 760px; margin: 0 auto; padding: var(--sp-4) var(--sp-3) var(--
 .btn-icon:hover { color: var(--fg); }
 .btn-block { display: flex; width: 100%; margin-top: var(--sp-4); }
 
+/* All icons are inline SVGs at one fixed size so they line up exactly. */
+.btn-icon svg,
+.nav-arrow svg {
+  width: 1.2rem;
+  height: 1.2rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .field { display: flex; flex-direction: column; gap: var(--sp-1); font-size: var(--fs-sm); color: var(--dim); }
 .field input,
 .field select {
@@ -192,8 +204,16 @@ header { margin-bottom: var(--sp-3); }
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-.stat .value { font-size: var(--fs-lg); font-weight: 600; font-variant-numeric: tabular-nums; }
-.stat .sub { font-size: var(--fs-xs); color: var(--dim); }
+.stat .row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-variant-numeric: tabular-nums;
+}
+.stat .row .k { color: var(--dim); font-size: var(--fs-xs); }
+.stat .row .v { font-size: var(--fs-sm); font-weight: 600; }
+.stat .row .v.dim { color: var(--dim); font-weight: 500; }
 
 .good { color: var(--good); }
 .bad { color: var(--bad); }
@@ -253,19 +273,37 @@ td.note {
 }
 td.type { color: var(--dim); }
 
-/* ---------- inline plan form ---------- */
-tr.plan-form td { padding: var(--sp-4); background: var(--surface-alt); }
-tr.plan-form form { display: flex; flex-direction: column; gap: var(--sp-3); }
-.plan-title { margin: 0; font-size: var(--fs-md); font-weight: 600; }
+/* ---------- plan modal ---------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-4);
+  background: rgba(0, 0, 0, 0.5);
+}
+.modal {
+  width: 100%;
+  max-width: 440px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-6);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+}
+.modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--sp-4); }
+.modal-head h2 { margin: 0; font-size: var(--fs-lg); font-weight: 600; }
+.modal form { display: flex; flex-direction: column; gap: var(--sp-4); }
 .plan-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: 1fr 1fr;
   gap: var(--sp-3);
 }
 .plan-grid .plan-note { grid-column: 1 / -1; }
 .plan-hint { margin: 0; font-size: var(--fs-xs); color: var(--dim); }
-tr.plan-form .plan-actions { display: flex; gap: var(--sp-2); }
-tr.plan-form .plan-actions .btn { flex: 1; }
+.modal .plan-actions { display: flex; gap: var(--sp-2); justify-content: flex-end; }
 
 /* ---------- auth / settings card ---------- */
 .card {

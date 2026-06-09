@@ -1,7 +1,13 @@
-<tr id="row-{{ day.isoformat() }}" class="plan-form">
-  <td colspan="6">
-    <form hx-post="/plan/{{ day.isoformat() }}" hx-target="#content" hx-swap="innerHTML">
-      <p class="plan-title">Plan {{ day.strftime('%A %-d %b %Y') }}</p>
+<div class="modal-backdrop" onclick="if(event.target===this)this.closest('#modal').innerHTML=''">
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h2>{{ day.strftime('%A %-d %b %Y') }}</h2>
+      <button class="btn btn-icon" type="button" title="Close"
+              onclick="document.getElementById('modal').innerHTML=''">
+        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <form hx-post="/plan/{{ day.isoformat() }}" hx-target="#content" hx-swap="innerHTML"
+          hx-on::after-request="document.getElementById('modal').innerHTML=''">
       <div class="plan-grid">
         <label class="field">Office hours
           <input type="text" name="office_hours" inputmode="decimal"
@@ -9,7 +15,7 @@
         <label class="field">WFH hours
           <input type="text" name="wfh_hours" inputmode="decimal"
             value="{{ planned.remote_minutes / 60 if planned and planned.remote_minutes else '' }}" placeholder="1.5"></label>
-        <label class="field">Leave
+        <label class="field plan-note">Leave
           <select name="leave">
             <option value="none">Working day</option>
             <option value="full" {% if planned and planned.is_paid_leave and not planned.is_half_day_leave %}selected{% endif %}>Paid leave (full day)</option>
@@ -20,16 +26,17 @@
         <label class="field plan-note">Note
           <input type="text" name="note" value="{{ planned.note if planned else '' }}" placeholder="optional"></label>
       </div>
-      <p class="plan-hint">Leave (full or unpaid) clears the worked hours for the day.</p>
+      <p class="plan-hint">Full-day or unpaid leave clears the worked hours for the day.</p>
       <div class="plan-actions">
-        <button class="btn btn-primary" type="submit">Save</button>
+        <button class="btn" type="button"
+                onclick="document.getElementById('modal').innerHTML=''">Cancel</button>
         {% if planned %}
         <button class="btn btn-danger" type="button" hx-delete="/plan/{{ day.isoformat() }}"
-                hx-target="#content" hx-swap="innerHTML">Delete</button>
+                hx-target="#content" hx-swap="innerHTML"
+                hx-on::after-request="document.getElementById('modal').innerHTML=''">Delete</button>
         {% endif %}
-        <button class="btn" type="button" hx-get="/month/{{ day.year }}/{{ day.month }}/content"
-                hx-target="#content" hx-swap="innerHTML">Cancel</button>
+        <button class="btn btn-primary" type="submit">Save</button>
       </div>
     </form>
-  </td>
-</tr>
+  </div>
+</div>

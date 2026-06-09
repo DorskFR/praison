@@ -228,6 +228,16 @@ def create_app(db: Store | None = None) -> FastAPI:
             server_summary=summary,
         )
         planned_dates = {p.date for p in planned}
+        # What we parsed as actually clocked so far (past + today), to compare
+        # against Praise's own summary; a gap means our parsing drifted.
+        recorded_office = sum(r.office_minutes for r in merged if r.date <= today)
+        recorded_remote = sum(r.remote_minutes for r in merged if r.date <= today)
+        office_clocked_mismatch = (
+            summary is not None and abs(summary.on_site_minutes - recorded_office) > 1
+        )
+        remote_clocked_mismatch = (
+            summary is not None and abs(summary.remote_minutes - recorded_remote) > 1
+        )
         return {
             "request": request,
             "year": year,
@@ -238,6 +248,10 @@ def create_app(db: Store | None = None) -> FastAPI:
             "daily_balances": daily_balances,
             "planned_dates": planned_dates,
             "summary": summary,
+            "recorded_office": recorded_office,
+            "recorded_remote": recorded_remote,
+            "office_clocked_mismatch": office_clocked_mismatch,
+            "remote_clocked_mismatch": remote_clocked_mismatch,
             "nav": _month_nav(year, month),
             "fetch_error": cache.last_error(user.id),
             "fetched_at": (
