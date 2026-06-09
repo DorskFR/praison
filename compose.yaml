@@ -9,7 +9,8 @@ services:
       DB_USER: postgres
       DB_PASS: postgres
     depends_on:
-      - database
+      database:
+        condition: service_healthy
     volumes:
       # Holds the encryption key, minted once on first start and reused after.
       - praison-data:/data
@@ -24,6 +25,11 @@ services:
     volumes:
       # postgres:18 stores data under a version subdirectory of this path.
       - praison-db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d praison"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
 volumes:
