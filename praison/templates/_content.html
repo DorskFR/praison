@@ -29,16 +29,14 @@
   <div class="stat">
     <span class="label">Office</span>
     <span class="row"><span class="k">Clocked</span>
-      {% if summary %}<span class="v {% if office_clocked_mismatch %}warn{% endif %}"
-        {% if office_clocked_mismatch %}title="Praise reports {{ summary.on_site_minutes|dur }} but we recorded {{ recorded_office|dur }}"{% endif %}>{{ summary.on_site_minutes|dur }}{% if office_clocked_mismatch %} ⚠{% endif %}</span>{% else %}<span class="v dim">–</span>{% endif %}</span>
+      {% if summary %}<span class="v">{{ summary.on_site_minutes|dur }}</span>{% else %}<span class="v dim">–</span>{% endif %}</span>
     <span class="row"><span class="k">Planned</span><span class="v {% if stats.office_deficit > 0 %}bad{% else %}good{% endif %}">{{ stats.total_office_hours|hours }}</span></span>
     <span class="row"><span class="k">Required</span><span class="v dim">{{ stats.office_required_hours|hours }}</span></span>
   </div>
   <div class="stat">
     <span class="label">WFH</span>
     <span class="row"><span class="k">Clocked</span>
-      {% if summary %}<span class="v {% if remote_clocked_mismatch %}warn{% endif %}"
-        {% if remote_clocked_mismatch %}title="Praise reports {{ summary.remote_minutes|dur }} but we recorded {{ recorded_remote|dur }}"{% endif %}>{{ summary.remote_minutes|dur }}{% if remote_clocked_mismatch %} ⚠{% endif %}</span>{% else %}<span class="v dim">–</span>{% endif %}</span>
+      {% if summary %}<span class="v">{{ summary.remote_minutes|dur }}</span>{% else %}<span class="v dim">–</span>{% endif %}</span>
     <span class="row"><span class="k">Planned</span><span class="v {% if stats.wfh_over_quota > 0 %}bad{% else %}good{% endif %}">{{ stats.total_wfh_hours|hours }}</span></span>
     <span class="row"><span class="k">Quota</span><span class="v dim">{{ stats.wfh_quota_hours|hours }}</span></span>
   </div>
