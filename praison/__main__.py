@@ -8,6 +8,7 @@ deployment; new users just log in through the web form).
 
 import getpass
 import logging
+import os
 import sys
 
 import uvicorn
@@ -73,6 +74,14 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "config":
         configure()
         return
+
+    # Configure the root logger so praison.* logs are emitted (uvicorn only
+    # configures its own loggers). LOG_LEVEL=DEBUG surfaces the per-fetch
+    # cookie-reuse traffic; INFO (default) still shows logins and reuse.
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
 
     from praison.app import create_app
 

@@ -1,6 +1,6 @@
 [project]
 name = "praison"
-version = "0.3.4"
+version = "0.3.5"
 description = "Web planning tool for Praise time tracking with workplace rules"
 authors = [
     { name = "DorskFR", email = "dorsk.dev@gmail.com" }
