@@ -14,6 +14,12 @@ docker compose up
 
 That's the whole setup — one command, no files to mount, no keys to generate. Open <http://localhost:24601>, then sign in with your **Praise URL + email + password**. The encryption key and Postgres data are created once and persist in named Docker volumes.
 
+Or run the published image directly (no Postgres — falls back to SQLite stored in the volume):
+
+```bash
+docker run -p 24601:24601 -v praison-data:/data ghcr.io/dorskfr/praison:latest
+```
+
 ## Run locally
 
 ```bash
