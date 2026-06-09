@@ -5,6 +5,7 @@ X-Build-Version header from /api/health, transparent recovery from stale
 build version (426) and rejected session (401).
 """
 
+import logging
 from dataclasses import dataclass, field
 from http.cookiejar import LoadError, LWPCookieJar
 from pathlib import Path
@@ -16,6 +17,8 @@ from requests.cookies import RequestsCookieJar
 
 from praison.config import DEFAULT_SESSION_PATH
 from praison.errors import InvalidPraiseLoginError, PraiseApiError
+
+logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30  # seconds
 
@@ -140,6 +143,9 @@ class PraiseSession:
             self._save_build_version()
             response = self.session.get(url, **kwargs)
         if response.status_code == 401:
+            logger.info(
+                "praise session: cached cookie rejected (401), re-authenticating %s", self._email
+            )
             self._login()
             self._save_session()
             response = self.session.get(url, **kwargs)
@@ -155,6 +161,7 @@ class PraiseSession:
             self.session.headers["X-Build-Version"] = version
 
     def _login(self) -> None:
+        logger.info("praise session: minting new session via login for %s", self._email)
         response = self.session.post(
             f"{self._base_url}/api/auth/login",
             json={"email": self._email, "password": self._password},
@@ -177,6 +184,7 @@ class PraiseSession:
                 self.session.headers["X-Build-Version"] = self._state.build_version
             else:
                 self._fetch_build_version()
+            logger.info("praise session: reused in-memory cookie for %s", self._email)
             return True
         if self._session_path is None or not self._session_path.is_file():
             return False
@@ -194,6 +202,7 @@ class PraiseSession:
             self.session.headers["X-Build-Version"] = build_version
         else:
             self._fetch_build_version()
+        logger.info("praise session: reused on-disk cookie for %s", self._email)
         return True
 
     def _save_session(self) -> None:
