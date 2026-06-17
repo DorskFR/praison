@@ -151,6 +151,11 @@ class PraiseCache:
             self._sessions[user_id] = state
         return state
 
+    def store_session(self, user_id: str, state: SessionState) -> None:
+        """Cache and persist a Praise session minted outside a fetch (e.g. the
+        verification login at sign-in), so the first fetch reuses its cookie."""
+        self._persist_state(user_id, state)
+
     def _persist_state(self, user_id: str, state: SessionState) -> None:
         with self._lock:
             self._sessions[user_id] = state
@@ -350,8 +355,9 @@ def create_app(db: Store | None = None) -> FastAPI:
             assert_praise_url_allowed(url)
         except PraiseUrlNotAllowedError:
             return _login_error(request, "That Praise server is not permitted here.")
+        state = SessionState()
         try:
-            verify_credentials(url, email, password)
+            verify_credentials(url, email, password, state=state)
         except InvalidPraiseLoginError:
             return _login_error(request, "Praise rejected those credentials.")
         except Exception as exc:  # noqa: BLE001 - surface connection issues to the user
@@ -368,6 +374,10 @@ def create_app(db: Store | None = None) -> FastAPI:
             )
         else:
             db.update_login(user.id)
+        # Reuse the cookie minted during verification so the first fetch replays
+        # it instead of minting a second Praise session (which evicts the user's
+        # oldest active session). See SessionState in praise/session.py.
+        cache.store_session(user.id, state)
         request.session["user_id"] = user.id
         # The password is never persisted server-side: it rides in the signed
         # session cookie, encrypted, and is decrypted in memory per fetch.
