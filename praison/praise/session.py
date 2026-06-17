@@ -260,12 +260,17 @@ class PraiseSession:
         self._meta_path.chmod(0o600)
 
 
-def verify_credentials(base_url: str, email: str, password: str) -> None:
-    """Validate credentials against Praise without persisting anything.
+def verify_credentials(
+    base_url: str, email: str, password: str, state: SessionState | None = None
+) -> None:
+    """Validate credentials against Praise.
 
     Raises ``InvalidPraiseLoginError`` if Praise rejects them, ``PraiseApiError``
     or a network error if the server is unreachable. Used at login time to decide
     whether to admit (and, on first login, register) a praison account.
+
+    Pass ``state`` to capture the cookie minted by the verification login so the
+    caller can reuse it instead of minting a second session on the first fetch.
     """
-    with PraiseSession(base_url, email, password, session_path=None):
+    with PraiseSession(base_url, email, password, session_path=None, state=state):
         pass

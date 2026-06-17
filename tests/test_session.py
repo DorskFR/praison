@@ -52,6 +52,23 @@ def test_without_state_logs_in_every_time() -> None:
     assert _FakePraise.login_calls == 3
 
 
+def test_verify_credentials_captures_cookie_into_state(monkeypatch) -> None:
+    # At sign-in, the verification login must hand its minted cookie to the
+    # caller's state so the first fetch reuses it instead of minting a second
+    # Praise session (which evicts the user's oldest active session).
+    import praison.praise.session as session_mod
+
+    monkeypatch.setattr(session_mod, "PraiseSession", _FakePraise)
+    _FakePraise.login_calls = 0
+    state = SessionState()
+
+    session_mod.verify_credentials("praise.example", "e", "p", state=state)
+
+    assert _FakePraise.login_calls == 1
+    assert len(state.cookies) == 1
+    assert state.build_version == "v1"
+
+
 def test_session_state_survives_serialization() -> None:
     # Persisting the session to the database (and restoring after a restart)
     # must preserve the cookie and build version so no fresh login is needed.
