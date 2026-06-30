@@ -6,7 +6,7 @@ import os
 import threading
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -29,6 +29,7 @@ from praison.errors import (
 from praison.models import DayRecord, DayType, MonthStats, PlannedDay, ServerSummary, User
 from praison.parser import (
     build_location_categories,
+    parse_open_session,
     parse_summary,
     parse_timesheet,
 )
@@ -121,6 +122,9 @@ class CachedMonth:
     records: list[DayRecord]
     summary: ServerSummary
     fetched_at: float
+    # The session the user is currently clocked into, as (category, started_at).
+    # Praise's summary omits open sessions; we credit their elapsed time live.
+    open_session: tuple[str, datetime] | None = None
 
 
 class _NotAuthenticatedError(Exception):
@@ -204,12 +208,22 @@ class PraiseCache:
                     logger.warning("could not fetch locations, using name heuristics: %s", exc)
                     self._location_categories[user.id] = {}
             data = praise.get_timesheet(year, month)
+            open_session = None
+            with contextlib.suppress(Exception):  # clock status is a best-effort enrichment
+                open_session = parse_open_session(
+                    praise.get_clock_status(), self._location_categories[user.id]
+                )
         records = parse_timesheet(
             data,
             location_categories=self._location_categories[user.id],
             hours_per_day=user.hours_per_day,
         )
-        return CachedMonth(records=records, summary=parse_summary(data), fetched_at=time.time())
+        return CachedMonth(
+            records=records,
+            summary=parse_summary(data),
+            fetched_at=time.time(),
+            open_session=open_session,
+        )
 
 
 def _month_nav(year: int, month: int) -> dict[str, Any]:
@@ -272,10 +286,31 @@ def create_app(db: Store | None = None) -> FastAPI:
         *,
         force: bool = False,
     ) -> dict[str, Any]:
-        today = datetime.now(JST).date()
+        now = datetime.now(JST)
+        today = now.date()
         cached = cache.get_month(user, year, month, force=force)
         actual_records = cached.records if cached else []
         summary = cached.summary if cached else None
+        # Credit a session the user is currently clocked into. Praise's summary counts
+        # only closed sessions, so the live session is missing from on_site/remote
+        # minutes until clock-out; we add its elapsed time (to the matching bucket) so
+        # the displayed "Clocked", the office floor, and "leave at" all match Praise's
+        # live dashboard. Only applies to the month that actually contains today.
+        live_office_minutes = 0
+        live_remote_minutes = 0
+        is_current_month = (year, month) == (today.year, today.month)
+        if summary and cached and cached.open_session and is_current_month:
+            category, started_at = cached.open_session
+            elapsed = max(0, int((now - started_at).total_seconds() // 60))
+            if category == "remote":
+                live_remote_minutes = elapsed
+            else:
+                live_office_minutes = elapsed
+            summary = replace(
+                summary,
+                on_site_minutes=summary.on_site_minutes + live_office_minutes,
+                remote_minutes=summary.remote_minutes + live_remote_minutes,
+            )
         planned = db.get_planned_days_for_month(user.id, year, month)
         merged = merge_actual_and_planned(
             actual_records,
@@ -294,6 +329,8 @@ def create_app(db: Store | None = None) -> FastAPI:
             wfh_hours_per_day=user.wfh_hours_per_business_day,
             server_summary=summary,
             planned_days=planned,
+            live_office_minutes=live_office_minutes,
+            live_remote_minutes=live_remote_minutes,
         )
         planned_dates = {p.date for p in planned}
         return {

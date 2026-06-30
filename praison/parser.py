@@ -226,3 +226,31 @@ def build_location_categories(locations: list[dict[str, Any]]) -> dict[str, str]
         for loc in locations
         if loc.get("id") is not None
     }
+
+
+def parse_open_session(
+    clock_status: dict[str, Any] | None,
+    location_categories: dict[str, str],
+) -> tuple[str, datetime] | None:
+    """The currently-open clock-in session, as (category, started_at), or None.
+
+    Praise's ``/api/time/my-timesheet`` summary counts only *closed* sessions, so a
+    session you are actively clocked into is missing from ``onSiteMinutes`` /
+    ``remoteMinutes`` until you clock out — while Praise's own dashboard live-counts
+    it. We read ``/api/time/clock/status`` so callers can credit that elapsed time,
+    matching the dashboard (and reality).
+    """
+    if not clock_status or not clock_status.get("isClockedIn"):
+        return None
+    event = clock_status.get("lastEvent") or {}
+    if event.get("type") != "clock_in":
+        return None
+    timestamp = event.get("timestamp")
+    if not timestamp:
+        return None
+    try:
+        started_at = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    category = location_categories.get(str(event.get("locationId")), "on_site")
+    return (category, started_at)
