@@ -44,6 +44,17 @@ from praison.security import assert_praise_url_allowed
 
 logger = logging.getLogger(__name__)
 
+
+def _app_version() -> str:
+    """Installed package version, shown on the page so the running build is visible."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("praison")
+    except PackageNotFoundError:
+        return "dev"
+
+
 CACHE_TTL_SECONDS = 600  # auto refresh praise data every 10 minutes
 REFRESH_MIN_INTERVAL_SECONDS = 60  # ignore manual refreshes more frequent than this
 
@@ -234,6 +245,7 @@ def create_app(db: Store | None = None) -> FastAPI:
     templates = Jinja2Templates(directory=_TEMPLATES_DIR)
     templates.env.filters["dur"] = lambda minutes: str(Duration(int(minutes)))
     templates.env.filters["hours"] = lambda h: str(Duration(round(h * 60)))
+    templates.env.globals["app_version"] = _app_version()
 
     app.mount("/static", StaticFiles(directory=_TEMPLATES_DIR / "static"), name="static")
 

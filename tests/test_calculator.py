@@ -241,6 +241,45 @@ def test_leave_at_not_done_while_office_below_floor() -> None:
     assert result not in (None, "Done ✓")  # ~1h02m of office still owed today
 
 
+def test_leave_at_uses_server_summary_for_office_floor() -> None:
+    # The local reconstruction can diverge from Praise's authoritative summary. Here the
+    # local office is well over the floor (would say Done locally) but the server summary
+    # says office is still 1h02m below the required on-site floor -> NOT Done.
+    today = date(YEAR, MONTH, 30)
+    yesterday = today - timedelta(days=1)
+    prior = DayRecord(
+        date=yesterday,
+        day_type=DayType.WORKING_DAY,
+        entries=[WorkEntry(WorkplaceType.OFFICE, None, None, Duration(8600), "Work")],
+    )
+    today_record = _work_day(30, remote_minutes=165)
+    summary = ServerSummary(required_on_site_minutes=8580, on_site_minutes=8518)
+    result = _suggested_clockout(
+        [prior, today_record],
+        {yesterday: 480},
+        today,
+        hours_per_day=8,
+        total_wfh_quota_minutes=33 * 60,
+        office_required_minutes=8580,
+        server_summary=summary,
+    )
+    assert result not in (None, "Done ✓")
+    # Once the server summary shows the floor met, it is genuinely Done.
+    summary_met = ServerSummary(required_on_site_minutes=8580, on_site_minutes=8600)
+    assert (
+        _suggested_clockout(
+            [prior, today_record],
+            {yesterday: 480},
+            today,
+            hours_per_day=8,
+            total_wfh_quota_minutes=33 * 60,
+            office_required_minutes=8580,
+            server_summary=summary_met,
+        )
+        == "Done ✓"
+    )
+
+
 def test_leave_at_done_when_office_floor_met() -> None:
     # Same banked balance, but office already at the floor -> genuinely Done.
     today = date(YEAR, MONTH, 30)
