@@ -36,6 +36,7 @@ def calculate_month_stats(
     hours_per_day: int = DEFAULT_HOURS_PER_DAY,
     wfh_hours_per_day: float = DEFAULT_WFH_HOURS_PER_DAY,
     server_summary: ServerSummary | None = None,
+    planned_days: list[PlannedDay] | None = None,
 ) -> tuple[MonthStats, dict[date, int]]:
     """
     Calculate monthly statistics from merged records (actual + planned + auto-defaults).
@@ -60,6 +61,14 @@ def calculate_month_stats(
         today = datetime.now(JST).date()
 
     wfh_quota_per_day_minutes = int(wfh_hours_per_day * 60)
+
+    # When planned_days is provided, today's contribution to the *projected* totals
+    # (office/WFH "Planned" and the end-of-month surplus/deficit) is the greater of
+    # what has been clocked so far and what is still planned/required for today — so
+    # mid-day the projection assumes today's plan will be met rather than freezing at
+    # the partial clock. The running balance and "leave at" deliberately keep using
+    # the actual clocked-so-far, so they answer "where am I right now".
+    planned_by_date = {p.date: p for p in (planned_days or [])}
 
     working_days = 0
     paid_leave_days: float = 0
@@ -89,9 +98,24 @@ def calculate_month_stats(
         elif record.day_type == DayType.HALF_DAY_PAID_LEAVE:
             paid_leave_days += 0.5
 
-        # Aggregate hours (uncapped, for display purposes)
-        total_office_minutes += record.office_minutes
-        total_wfh_minutes += record.remote_minutes
+        # Aggregate hours (uncapped, for display purposes). For today, project to the
+        # plan/default if it exceeds what's been clocked so far (see note above).
+        projected_office_minutes = record.office_minutes
+        projected_wfh_minutes = record.remote_minutes
+        if (
+            planned_days is not None
+            and record.date == today
+            and record.day_type == DayType.WORKING_DAY
+        ):
+            plan = planned_by_date.get(today)
+            if plan is not None and (plan.office_minutes or plan.remote_minutes):
+                plan_office, plan_wfh = plan.office_minutes, plan.remote_minutes
+            else:
+                plan_office, plan_wfh = hours_per_day * 60, 0
+            projected_office_minutes = max(projected_office_minutes, plan_office)
+            projected_wfh_minutes = max(projected_wfh_minutes, plan_wfh)
+        total_office_minutes += projected_office_minutes
+        total_wfh_minutes += projected_wfh_minutes
 
         # Daily balance with WFH capping: only count WFH up to remaining quota
         capped_wfh_minutes = min(record.remote_minutes, remaining_wfh_quota_minutes)
