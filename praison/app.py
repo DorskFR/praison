@@ -281,6 +281,7 @@ def create_app(db: Store | None = None) -> FastAPI:
             hours_per_day=user.hours_per_day,
             wfh_hours_per_day=user.wfh_hours_per_business_day,
             server_summary=summary,
+            planned_days=planned,
         )
         planned_dates = {p.date for p in planned}
         return {

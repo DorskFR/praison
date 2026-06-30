@@ -151,6 +151,68 @@ def test_full_month_plan_reaches_neutral_eom() -> None:
     assert stats.wfh_over_quota == 0
 
 
+def test_today_projects_to_default_for_planned_totals() -> None:
+    # Today: clocked only 3h office so far, no explicit plan -> projected totals
+    # assume the 8h working day, but the running balance reflects actual 3h.
+    today = date(YEAR, MONTH, 1)
+    records = [_work_day(1, office_minutes=180)]
+    stats, balances = calculate_month_stats(YEAR, MONTH, records, today=today, planned_days=[])
+    # Projected "Planned" office total = 8h, not the 3h clocked
+    assert stats.total_office_hours == 8.0
+    # Balance to date stays on actual: 3h worked - 8h expected = -5h
+    assert balances[today] == -300
+
+
+def test_today_projects_to_plan_split() -> None:
+    # Today clocked 1h office; an explicit plan splits 6.5h office + 1.5h WFH.
+    today = date(YEAR, MONTH, 1)
+    records = [_work_day(1, office_minutes=60)]
+    planned = [PlannedDay(date=today, office_minutes=390, remote_minutes=90)]
+    stats, balances = calculate_month_stats(YEAR, MONTH, records, today=today, planned_days=planned)
+    assert stats.total_office_hours == 6.5
+    assert stats.total_wfh_hours == 1.5
+    # Balance still on actual clocked: 1h - 8h = -7h
+    assert balances[today] == -420
+
+
+def test_today_projection_keeps_actual_when_already_over_plan() -> None:
+    today = date(YEAR, MONTH, 1)
+    records = [_work_day(1, office_minutes=600)]  # 10h, already past the 8h default
+    stats, _ = calculate_month_stats(YEAR, MONTH, records, today=today, planned_days=[])
+    assert stats.total_office_hours == 10.0
+
+
+def test_over_quota_wfh_excluded_from_eom_surplus() -> None:
+    # All-office month meeting required, plus WFH way over quota -> the excess WFH
+    # must NOT inflate the end-of-month surplus.
+    records = generate_month_calendar(YEAR, MONTH)
+    working = [r for r in records if r.day_type == DayType.WORKING_DAY]
+    for r in working:
+        r.entries.append(WorkEntry(WorkplaceType.OFFICE, None, None, Duration(480), "Work"))
+        r.entries.append(WorkEntry(WorkplaceType.WFH, None, None, Duration(120), "Work"))
+    stats, _ = calculate_month_stats(YEAR, MONTH, records, today=date(YEAR, MONTH, 30))
+    # Office alone (22*8h) already meets the 176h required; WFH (22*2h=44h) is all
+    # above the office requirement and only counts up to the 33h quota.
+    assert stats.actual_wfh_hours == 44.0
+    assert stats.wfh_quota_hours == 33.0
+    # Surplus = office(176) + min(wfh 44, quota 33) - required 176 = 33h, NOT 44h.
+    assert stats.total_deficit == -33.0
+
+
+def test_leave_at_ignores_over_quota_wfh() -> None:
+    # Quota fully burned on earlier days; today's WFH is entirely over quota and
+    # must not count toward the suggested clock-out.
+    records = generate_month_calendar(YEAR, MONTH)
+    working = [r for r in records if r.day_type == DayType.WORKING_DAY]
+    for r in working[:22]:  # burn the whole 33h quota with WFH before today
+        r.entries.append(WorkEntry(WorkplaceType.WFH, None, None, Duration(120), "Work"))
+    today = working[-1].date
+    working[-1].entries.append(WorkEntry(WorkplaceType.WFH, None, None, Duration(480), "Work"))
+    stats, _ = calculate_month_stats(YEAR, MONTH, records, today=today)
+    # Today's 8h WFH is over quota -> contributes nothing, so a full day is still owed.
+    assert stats.suggested_clockout_time not in (None, "Done ✓")
+
+
 def test_server_summary_discrepancy_flagged() -> None:
     records = generate_month_calendar(YEAR, MONTH)
     # Server thinks the budget is 1h/day, local config says 1.5h/day

@@ -48,7 +48,7 @@
   </div>
   <div class="stat">
     <span class="label">End of month</span>
-    <span class="row"><span class="k">{% if stats.total_deficit > 0 %}deficit{% else %}surplus{% endif %}</span><span class="v {% if stats.total_deficit > 0 %}bad{% else %}good{% endif %}">{% if stats.total_deficit > 0 %}-{{ stats.total_deficit|hours }}{% else %}+{{ (-stats.total_deficit)|hours }}{% endif %}</span></span>
+    <span class="row"><span class="k">proj. {% if stats.total_deficit > 0 %}deficit{% else %}surplus{% endif %}</span><span class="v {% if stats.total_deficit > 0 %}bad{% else %}good{% endif %}">{% if stats.total_deficit > 0 %}-{{ stats.total_deficit|hours }}{% else %}+{{ (-stats.total_deficit)|hours }}{% endif %}</span></span>
     <span class="row"><span class="k">required</span><span class="v dim">{{ stats.total_required_hours|hours }}</span></span>
   </div>
   <div class="stat">

@@ -8,11 +8,11 @@
     <form hx-post="/plan/{{ day.isoformat() }}" hx-target="#content" hx-swap="innerHTML">
       <div class="plan-grid">
         <label class="field">Office hours
-          <input type="text" name="office_hours" inputmode="decimal"
-            value="{{ planned.office_minutes / 60 if planned and planned.office_minutes else '' }}" placeholder="8 or 7:30"></label>
+          <input type="text" name="office_hours" inputmode="text"
+            value="{{ planned.office_minutes|dur if planned and planned.office_minutes else '' }}" placeholder="8:00 or 7:30"></label>
         <label class="field">WFH hours
-          <input type="text" name="wfh_hours" inputmode="decimal"
-            value="{{ planned.remote_minutes / 60 if planned and planned.remote_minutes else '' }}" placeholder="1.5"></label>
+          <input type="text" name="wfh_hours" inputmode="text"
+            value="{{ planned.remote_minutes|dur if planned and planned.remote_minutes else '' }}" placeholder="1:30"></label>
         <label class="field plan-note">Leave
           <select name="leave">
             <option value="none">Working day</option>
