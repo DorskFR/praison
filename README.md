@@ -12,7 +12,7 @@ Self-hosted web app for planning your hours on a Praise time-tracking instance: 
 docker compose up
 ```
 
-That's the whole setup — one command, no files to mount, no keys to generate. Open <http://localhost:24601>, then sign in with your **Praise URL + email + password**. The encryption key and Postgres data are created once and persist in named Docker volumes.
+That's the whole setup — one command, no files to mount, no keys to generate. Open <http://localhost:24601>, enter your **Praise URL**, then **authorize praison in Praise**: praison shows a short code and a link, you approve it in your own Praise session (where 2FA and the captcha are handled), and praison is signed in. No Praise password is ever entered into or stored by praison — only the resulting access token, encrypted, per user. The encryption key and Postgres data are created once and persist in named Docker volumes.
 
 Or run the published image directly (no Postgres — falls back to SQLite stored in the volume):
 

@@ -1,8 +1,8 @@
-"""Symmetric encryption for Praise credentials at rest.
+"""Symmetric encryption for the Praise bearer token at rest.
 
-Credentials must survive a round-trip (encrypt at rest, decrypt to replay to
-the Praise server on each session), so this is reversible symmetric encryption,
-not hashing. The key comes from ``PRAISON_SECRET_KEY`` (a urlsafe-base64 32-byte
+The token must survive a round-trip (encrypt at rest, decrypt to replay to the
+Praise server on each fetch), so this is reversible symmetric encryption, not
+hashing. The key comes from ``PRAISON_SECRET_KEY`` (a urlsafe-base64 32-byte
 Fernet key); for local/standalone use a key is generated once and persisted
 0600 under the config dir.
 """

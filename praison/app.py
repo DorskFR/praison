@@ -1,4 +1,4 @@
-"""FastAPI web app: Praise-credential login, then per-user month view."""
+"""FastAPI web app: Praise device-flow login, then per-user month view."""
 
 import contextlib
 import logging
@@ -21,7 +21,11 @@ from praison.calculator import calculate_month_stats, merge_actual_and_planned
 from praison.crypto import decrypt, encrypt, session_secret
 from praison.database import Store, create_database
 from praison.duration import JST, Duration
-from praison.errors import InvalidPraiseLoginError, PraiseUrlNotAllowedError
+from praison.errors import (
+    PraiseCliLoginError,
+    PraiseTokenExpiredError,
+    PraiseUrlNotAllowedError,
+)
 from praison.models import DayRecord, DayType, MonthStats, PlannedDay, ServerSummary, User
 from praison.parser import (
     build_location_categories,
@@ -30,11 +34,11 @@ from praison.parser import (
 )
 from praison.praise.session import (
     PraiseSession,
-    SessionState,
-    dump_session_state,
-    load_session_state,
+    fetch_me,
+    logout_token,
     normalize_url,
-    verify_credentials,
+    poll_cli_token,
+    start_cli_login,
 )
 from praison.security import assert_praise_url_allowed
 
@@ -121,51 +125,26 @@ class PraiseCache:
         self._months: dict[tuple[str, int, int], CachedMonth] = {}
         self._location_categories: dict[str, dict[str, str]] = {}
         self._last_error: dict[str, str | None] = {}
-        # Per-user Praise cookie, reused across fetches so we log in once per
-        # user instead of on every fetch (which evicts their browser sessions).
-        # Persisted to the database so a restart reuses the cookie too.
-        self._sessions: dict[str, SessionState] = {}
 
     def last_error(self, user_id: str) -> str | None:
         return self._last_error.get(user_id)
 
+    def needs_reauth(self, user_id: str) -> bool:
+        """True when the user has no usable Praise token (must re-run the flow)."""
+        return self._db.get_praise_token(user_id) is None
+
     def clear_user(self, user_id: str) -> None:
-        """Drop a user's cached months and Praise session (called on logout)."""
+        """Drop a user's cached months and Praise token (called on logout)."""
         with self._lock:
-            self._sessions.pop(user_id, None)
             self._months = {k: v for k, v in self._months.items() if k[0] != user_id}
+
+    def _drop_token(self, user_id: str) -> None:
+        """Forget a user's token so the UI prompts them to re-authorize."""
         with contextlib.suppress(Exception):
-            self._db.delete_praise_session(user_id)
-
-    def _state_for(self, user_id: str) -> SessionState:
-        with self._lock:
-            cached = self._sessions.get(user_id)
-        if cached is not None:
-            return cached
-        state = SessionState()
-        row = self._db.get_praise_session(user_id)
-        if row:
-            with contextlib.suppress(Exception):  # tampered/rotated key -> fresh login
-                state = load_session_state(decrypt(row[0]))
-        with self._lock:
-            self._sessions[user_id] = state
-        return state
-
-    def store_session(self, user_id: str, state: SessionState) -> None:
-        """Cache and persist a Praise session minted outside a fetch (e.g. the
-        verification login at sign-in), so the first fetch reuses its cookie."""
-        self._persist_state(user_id, state)
-
-    def _persist_state(self, user_id: str, state: SessionState) -> None:
-        with self._lock:
-            self._sessions[user_id] = state
-        with contextlib.suppress(Exception):
-            self._db.save_praise_session(
-                user_id, encrypt(dump_session_state(state)), state.build_version
-            )
+            self._db.delete_praise_token(user_id)
 
     def get_month(
-        self, user: User, password: str, year: int, month: int, *, force: bool = False
+        self, user: User, year: int, month: int, *, force: bool = False
     ) -> CachedMonth | None:
         key = (user.id, year, month)
         with self._lock:
@@ -177,7 +156,14 @@ class PraiseCache:
             if cached and force and time.time() - cached.fetched_at < REFRESH_MIN_INTERVAL_SECONDS:
                 return cached
         try:
-            fresh = self._fetch(user, password, year, month)
+            fresh = self._fetch(user, year, month)
+        except PraiseTokenExpiredError as exc:
+            # The token was rejected (expired/revoked/evicted). Forget it so the
+            # page surfaces a re-authorize prompt instead of looping.
+            logger.info("praise token expired for %s: %s", user.id, exc)
+            self._drop_token(user.id)
+            self._last_error[user.id] = None
+            return cached
         except Exception as exc:  # noqa: BLE001 - praise being down must not kill the page
             logger.warning("praise fetch failed for %s: %s", user.id, exc)
             self._last_error[user.id] = str(exc)
@@ -187,22 +173,26 @@ class PraiseCache:
             self._last_error[user.id] = None
         return fresh
 
-    def _fetch(self, user: User, password: str, year: int, month: int) -> CachedMonth:
-        state = self._state_for(user.id)
-        with PraiseSession(
-            user.praise_url, user.praise_email, password, session_path=None, state=state
-        ) as praise:
+    def _fetch(self, user: User, year: int, month: int) -> CachedMonth:
+        enc = self._db.get_praise_token(user.id)
+        if not enc:
+            raise PraiseTokenExpiredError("no Praise token stored")
+        try:
+            token = decrypt(enc)
+        except Exception as exc:
+            raise PraiseTokenExpiredError("stored token could not be decrypted") from exc
+        with PraiseSession(user.praise_url, token) as praise:
             if user.id not in self._location_categories:
                 try:
                     self._location_categories[user.id] = build_location_categories(
                         praise.get_locations()
                     )
+                except PraiseTokenExpiredError:
+                    raise
                 except Exception as exc:  # noqa: BLE001 - fall back to name heuristics
                     logger.warning("could not fetch locations, using name heuristics: %s", exc)
                     self._location_categories[user.id] = {}
             data = praise.get_timesheet(year, month)
-        # Persist the (possibly refreshed) cookie so a restart reuses it.
-        self._persist_state(user.id, state)
         records = parse_timesheet(
             data,
             location_categories=self._location_categories[user.id],
@@ -255,18 +245,6 @@ def create_app(db: Store | None = None) -> FastAPI:
                 return user
         raise _NotAuthenticatedError
 
-    def require_password(request: Request) -> str:
-        """Decrypt the Praise password carried in the session cookie.
-
-        The password is never stored server-side; it lives only here, encrypted,
-        and is decrypted in memory per request to replay to Praise.
-        """
-        token = request.session.get("praise_pw")
-        if token:
-            with contextlib.suppress(Exception):  # tampered/rotated key -> re-auth
-                return decrypt(token)
-        raise _NotAuthenticatedError
-
     @app.exception_handler(_NotAuthenticatedError)
     async def _redirect_to_login(request: Request, exc: _NotAuthenticatedError) -> Response:  # noqa: ARG001
         # HTMX swaps wouldn't follow a 303, so ask it to do a full-page redirect.
@@ -277,14 +255,13 @@ def create_app(db: Store | None = None) -> FastAPI:
     def month_context(
         request: Request,
         user: User,
-        password: str,
         year: int,
         month: int,
         *,
         force: bool = False,
     ) -> dict[str, Any]:
         today = datetime.now(JST).date()
-        cached = cache.get_month(user, password, year, month, force=force)
+        cached = cache.get_month(user, year, month, force=force)
         actual_records = cached.records if cached else []
         summary = cached.summary if cached else None
         planned = db.get_planned_days_for_month(user.id, year, month)
@@ -317,6 +294,7 @@ def create_app(db: Store | None = None) -> FastAPI:
             "planned_dates": planned_dates,
             "summary": summary,
             "nav": _month_nav(year, month),
+            "needs_reauth": cache.needs_reauth(user.id),
             "fetch_error": cache.last_error(user.id),
             "fetched_at": (
                 datetime.fromtimestamp(cached.fetched_at, tz=JST).strftime("%H:%M")
@@ -327,73 +305,128 @@ def create_app(db: Store | None = None) -> FastAPI:
             "MonthStats": MonthStats,
         }
 
+    def _has_valid_token(request: Request) -> bool:
+        user_id = request.session.get("user_id")
+        return user_id is not None and db.get_praise_token(user_id) is not None
+
+    def _login_card(
+        request: Request, *, error: str | None = None, status: int = 200
+    ) -> HTMLResponse:
+        """Render the login card (the URL form). A fragment for HTMX, else a page."""
+        prefill_url = ""
+        reauth = False
+        user_id = request.session.get("user_id")
+        if user_id:
+            existing = db.get_user_by_id(user_id)
+            if existing:
+                prefill_url = existing.praise_url
+                reauth = True
+        template = "_login_card.html" if request.headers.get("HX-Request") else "login.html"
+        return templates.TemplateResponse(
+            request,
+            template,
+            {"request": request, "error": error, "reauth": reauth, "prefill_url": prefill_url},
+            status_code=status,
+        )
+
     @app.get("/login", response_class=HTMLResponse)
     def login_form(request: Request) -> Response:
-        # Only skip the form when fully authenticated. A session with a user_id
-        # but no password (e.g. a cookie predating session-stored credentials)
-        # must still see the form, else "/" -> needs password -> "/login" -> "/"
-        # loops forever.
-        if request.session.get("user_id") and request.session.get("praise_pw"):
+        # Skip the form only when the user is signed in AND has a usable token.
+        if _has_valid_token(request):
             return RedirectResponse("/", status_code=303)
-        return templates.TemplateResponse(request, "login.html", {"request": request})
+        return _login_card(request)
 
-    @app.post("/login", response_class=HTMLResponse)
-    def login_submit(
+    @app.post("/login/start", response_class=HTMLResponse)
+    def login_start(
         request: Request,
         praise_url: Annotated[str, Form()],
-        email: Annotated[str, Form()],
-        password: Annotated[str, Form()],
     ) -> Response:
         client = request.client.host if request.client else "unknown"
         if not login_limiter.allow(client):
-            return _login_error(
-                request, "Too many login attempts. Please wait and try again.", status=429
+            return _login_card(
+                request, error="Too many attempts. Please wait and try again.", status=429
             )
         url = normalize_url(praise_url)
-        email = email.strip()
         try:
             assert_praise_url_allowed(url)
         except PraiseUrlNotAllowedError:
-            return _login_error(request, "That Praise server is not permitted here.")
-        state = SessionState()
+            return _login_card(request, error="That Praise server is not permitted here.")
         try:
-            verify_credentials(url, email, password, state=state)
-        except InvalidPraiseLoginError:
-            return _login_error(request, "Praise rejected those credentials.")
+            start = start_cli_login(url)
         except Exception as exc:  # noqa: BLE001 - surface connection issues to the user
-            logger.warning("login verification failed: %s", exc)
-            return _login_error(request, "Could not reach that Praise server.")
+            logger.warning("cli/start failed for %s: %s", url, exc)
+            return _login_card(request, error="Could not reach that Praise server.")
 
-        user = db.get_user_by_identity(url, email)
+        request.session["pending_login"] = {
+            "base_url": start.base_url,
+            "device_code": start.device_code,
+            "expires_at": start.expires_at,
+        }
+        user_code = start.user_code
+        formatted = f"{user_code[:4]}-{user_code[4:]}" if len(user_code) >= 8 else user_code
+        return templates.TemplateResponse(
+            request,
+            "_login_waiting.html",
+            {
+                "request": request,
+                "verification_url": start.verification_url,
+                "user_code": formatted,
+                "interval": start.interval_seconds,
+            },
+        )
+
+    @app.get("/login/poll", response_class=HTMLResponse)
+    def login_poll(request: Request) -> Response:
+        pending = request.session.get("pending_login")
+        if not pending:
+            return Response(status_code=204, headers={"HX-Redirect": "/login"})
+        base_url = pending["base_url"]
+        try:
+            token = poll_cli_token(base_url, pending["device_code"])
+        except PraiseCliLoginError as exc:
+            request.session.pop("pending_login", None)
+            return _login_card(request, error=str(exc))
+        except Exception as exc:  # noqa: BLE001 - transient; let the poller keep trying
+            logger.info("cli/token poll error (will retry): %s", exc)
+            return Response(status_code=204)
+        if token is None:
+            return Response(status_code=204)  # still pending; HTMX keeps polling
+
+        try:
+            me = fetch_me(base_url, token)
+            email = str(me["email"]).strip()
+        except Exception as exc:  # noqa: BLE001 - couldn't confirm identity
+            logger.warning("fetch_me failed after token grant: %s", exc)
+            request.session.pop("pending_login", None)
+            return _login_card(request, error="Praise authorization failed. Please try again.")
+
+        user = db.get_user_by_identity(base_url, email)
         if user is None:
             user = db.create_user(
-                url,
+                base_url,
                 email,
                 hours_per_day=DEFAULT_HOURS_PER_DAY,
                 wfh_hours_per_business_day=DEFAULT_WFH_PER_BUSINESS_DAY,
             )
         else:
             db.update_login(user.id)
-        # Reuse the cookie minted during verification so the first fetch replays
-        # it instead of minting a second Praise session (which evicts the user's
-        # oldest active session). See SessionState in praise/session.py.
-        cache.store_session(user.id, state)
+        db.save_praise_token(user.id, encrypt(token))
+        request.session.pop("pending_login", None)
         request.session["user_id"] = user.id
-        # The password is never persisted server-side: it rides in the signed
-        # session cookie, encrypted, and is decrypted in memory per fetch.
-        request.session["praise_pw"] = encrypt(password)
-        return RedirectResponse("/", status_code=303)
-
-    def _login_error(request: Request, message: str, status: int = 401) -> HTMLResponse:
-        return templates.TemplateResponse(
-            request, "login.html", {"request": request, "error": message}, status_code=status
-        )
+        return Response(status_code=204, headers={"HX-Redirect": "/"})
 
     @app.post("/logout")
     def logout(request: Request) -> RedirectResponse:
-        # Clear the stored Praise session too, so the next login mints a fresh one.
         user_id = request.session.get("user_id")
         if user_id:
+            # Best-effort revoke the Praise token, then forget it locally.
+            enc = db.get_praise_token(user_id)
+            if enc:
+                user = db.get_user_by_id(user_id)
+                with contextlib.suppress(Exception):
+                    if user:
+                        logout_token(user.praise_url, decrypt(enc))
+                db.delete_praise_token(user_id)
             cache.clear_user(user_id)
         request.session.clear()
         return RedirectResponse("/login", status_code=303)
@@ -421,7 +454,6 @@ def create_app(db: Store | None = None) -> FastAPI:
     def settings_save(
         request: Request,
         user: Annotated[User, Depends(require_user)],
-        password: Annotated[str, Depends(require_password)],
         hours_per_day: Annotated[str, Form()],
         wfh_hours_per_business_day: Annotated[str, Form()],
         year: Annotated[int, Form()],
@@ -451,7 +483,7 @@ def create_app(db: Store | None = None) -> FastAPI:
         return templates.TemplateResponse(
             request,
             "_content.html",
-            month_context(request, user, password, year, month),
+            month_context(request, user, year, month),
         )
 
     @app.get("/", response_class=HTMLResponse)
@@ -463,38 +495,35 @@ def create_app(db: Store | None = None) -> FastAPI:
     def month_view(
         request: Request,
         user: Annotated[User, Depends(require_user)],
-        password: Annotated[str, Depends(require_password)],
         year: int,
         month: int,
     ) -> HTMLResponse:
         return templates.TemplateResponse(
-            request, "month.html", month_context(request, user, password, year, month)
+            request, "month.html", month_context(request, user, year, month)
         )
 
     @app.get("/month/{year}/{month}/content", response_class=HTMLResponse)
     def month_content(
         request: Request,
         user: Annotated[User, Depends(require_user)],
-        password: Annotated[str, Depends(require_password)],
         year: int,
         month: int,
     ) -> HTMLResponse:
         return templates.TemplateResponse(
-            request, "_content.html", month_context(request, user, password, year, month)
+            request, "_content.html", month_context(request, user, year, month)
         )
 
     @app.post("/month/{year}/{month}/refresh", response_class=HTMLResponse)
     def month_refresh(
         request: Request,
         user: Annotated[User, Depends(require_user)],
-        password: Annotated[str, Depends(require_password)],
         year: int,
         month: int,
     ) -> HTMLResponse:
         return templates.TemplateResponse(
             request,
             "_content.html",
-            month_context(request, user, password, year, month, force=True),
+            month_context(request, user, year, month, force=True),
         )
 
     @app.get("/plan/{day}", response_class=HTMLResponse)
@@ -513,7 +542,6 @@ def create_app(db: Store | None = None) -> FastAPI:
     def plan_save(
         request: Request,
         user: Annotated[User, Depends(require_user)],
-        password: Annotated[str, Depends(require_password)],
         day: str,
         office_hours: Annotated[str, Form()] = "0",
         wfh_hours: Annotated[str, Form()] = "0",
@@ -539,14 +567,13 @@ def create_app(db: Store | None = None) -> FastAPI:
         return templates.TemplateResponse(
             request,
             "_content.html",
-            month_context(request, user, password, target.year, target.month),
+            month_context(request, user, target.year, target.month),
         )
 
     @app.delete("/plan/{day}", response_class=HTMLResponse)
     def plan_delete(
         request: Request,
         user: Annotated[User, Depends(require_user)],
-        password: Annotated[str, Depends(require_password)],
         day: str,
     ) -> HTMLResponse:
         target = date.fromisoformat(day)
@@ -554,7 +581,7 @@ def create_app(db: Store | None = None) -> FastAPI:
         return templates.TemplateResponse(
             request,
             "_content.html",
-            month_context(request, user, password, target.year, target.month),
+            month_context(request, user, target.year, target.month),
         )
 
     @app.get("/health")

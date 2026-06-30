@@ -1,61 +1,43 @@
-"""HTTP session against the Praise API.
+"""HTTP client against the Praise API using a CLI device-flow bearer token.
 
-Inspired by the praiselul package: cookie-based session persisted to disk,
-X-Build-Version header from /api/health, transparent recovery from stale
-build version (426) and rejected session (401).
+Praise forces 2FA (TOTP) and reCAPTCHA on ``/api/auth/login``, which a headless
+app cannot satisfy. Instead praison authenticates each user via Praise's CLI
+device-authorization flow:
+
+1. :func:`start_cli_login` opens a login request and returns a short user code
+   plus a verification URL.
+2. The user approves the request in their own Praise browser, where 2FA and the
+   captcha are handled -- praison never sees either.
+3. :func:`poll_cli_token` polls until Praise hands back a ``prs_cli_`` bearer
+   token (or the request is denied/expires).
+
+The caller stores that token encrypted, per user, and replays it via
+:class:`PraiseSession` on every fetch. Every request carries
+``X-Praise-CLI-Version`` (exactly as the real CLI does), which routes the call
+past Praise's strict web build-version check -- so there is no version handshake.
 """
 
-import json
 import logging
-from dataclasses import dataclass, field
-from http.cookiejar import LoadError, LWPCookieJar
-from pathlib import Path
+from dataclasses import dataclass
 from types import TracebackType
 from typing import Any, Self
 
 import requests
-from requests.cookies import RequestsCookieJar, cookiejar_from_dict
 
-from praison.config import DEFAULT_SESSION_PATH
-from praison.errors import InvalidPraiseLoginError, PraiseApiError
+from praison.errors import PraiseApiError, PraiseCliLoginError, PraiseTokenExpiredError
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30  # seconds
 
+CLI_TOKEN_PREFIX = "prs_cli_"  # noqa: S105 - token format marker, not a secret
 
-@dataclass
-class SessionState:
-    """In-memory cookie + build-version store, reused across PraiseSession
-    instances.
-
-    The multi-tenant web server keeps one of these per user so it logs in to
-    Praise once and replays the cookie on every fetch, instead of logging in
-    afresh each time. A fresh login mints a new Praise session, and Praise caps
-    active sessions per user and evicts the oldest once exceeded -- so repeated
-    logins silently sign the user out of their real browser sessions.
-    """
-
-    cookies: RequestsCookieJar = field(default_factory=RequestsCookieJar)
-    build_version: str | None = None
-
-
-def dump_session_state(state: SessionState) -> str:
-    """Serialize a SessionState to a JSON string for storage at rest."""
-    return json.dumps(
-        {
-            "cookies": requests.utils.dict_from_cookiejar(state.cookies),
-            "build_version": state.build_version,
-        }
-    )
-
-
-def load_session_state(blob: str) -> SessionState:
-    """Rebuild a SessionState from a string produced by :func:`dump_session_state`."""
-    data = json.loads(blob)
-    cookies = RequestsCookieJar()
-    cookies.update(cookiejar_from_dict(data.get("cookies") or {}))
-    return SessionState(cookies=cookies, build_version=data.get("build_version"))
+# Sent as ``X-Praise-CLI-Version`` on every request. Its presence makes Praise's
+# versionCheck middleware skip the exact web build-version match; cliVersionCheck
+# then only rejects it if it is *below* the server's CLI_MIN_VERSION. Keep this at
+# a recent CalVer; bump it if Praise raises its minimum supported CLI version.
+_CLI_VERSION = "2026.6.30"
+_BASE_HEADERS = {"X-Praise-CLI-Version": _CLI_VERSION}
 
 
 def normalize_url(base_url: str) -> str:
@@ -70,38 +52,131 @@ def normalize_url(base_url: str) -> str:
     return base_url.rstrip("/")
 
 
+@dataclass
+class CliLoginStart:
+    """A pending device-authorization request the user must approve in Praise."""
+
+    base_url: str
+    device_code: str
+    user_code: str
+    verification_url: str
+    expires_at: str
+    interval_seconds: int
+
+
+def _body(response: requests.Response) -> dict[str, Any]:
+    try:
+        data = response.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _error_code(body: dict[str, Any]) -> str | None:
+    error = body.get("error")
+    return error.get("code") if isinstance(error, dict) else None
+
+
+def _unwrap(response: requests.Response) -> Any:
+    """Return ``data`` from a Praise ``APISuccessResponse``; raise otherwise.
+
+    A 401 means the bearer token was rejected and the user must re-authorize.
+    """
+    if response.status_code == 401:
+        raise PraiseTokenExpiredError("Praise rejected the stored token")
+    body = _body(response)
+    if not body.get("success"):
+        code = _error_code(body) or f"http_{response.status_code}"
+        raise PraiseApiError(f"API error: {code}")
+    return body["data"]
+
+
+def start_cli_login(base_url: str, label: str | None = "praison") -> CliLoginStart:
+    """Open a CLI device-authorization request against Praise."""
+    base_url = normalize_url(base_url)
+    payload: dict[str, Any] = {}
+    if label:
+        payload["label"] = label
+    response = requests.post(
+        f"{base_url}/api/auth/cli/start", json=payload, headers=_BASE_HEADERS, timeout=_TIMEOUT
+    )
+    data = _unwrap(response)
+    return CliLoginStart(
+        base_url=base_url,
+        device_code=data["deviceCode"],
+        user_code=data["userCode"],
+        verification_url=data["verificationUrl"],
+        expires_at=data["expiresAt"],
+        interval_seconds=int(data.get("intervalSeconds", 5)),
+    )
+
+
+def poll_cli_token(base_url: str, device_code: str) -> str | None:
+    """Poll once for the device-flow token.
+
+    Returns the ``prs_cli_`` token once the request is approved, or ``None`` while
+    it is still pending. Raises :class:`PraiseCliLoginError` if the request was
+    denied, expired, or is otherwise invalid.
+    """
+    base_url = normalize_url(base_url)
+    response = requests.post(
+        f"{base_url}/api/auth/cli/token",
+        json={"deviceCode": device_code},
+        headers=_BASE_HEADERS,
+        timeout=_TIMEOUT,
+    )
+    body = _body(response)
+    if body.get("success"):
+        return body["data"]["token"]
+
+    code = _error_code(body)
+    if code == "apiError.cliLoginPending":
+        return None
+    terminal = {
+        "apiError.cliLoginRejected": "You denied the authorization request in Praise.",
+        "apiError.cliLoginExpired": "The authorization request expired. Please start again.",
+        "apiError.cliLoginCodeInvalid": "That authorization request is no longer valid.",
+    }
+    if code in terminal:
+        raise PraiseCliLoginError(terminal[code])
+    raise PraiseCliLoginError(f"Unexpected Praise response ({code or response.status_code}).")
+
+
+def fetch_me(base_url: str, token: str) -> dict[str, Any]:
+    """Fetch the authenticated user (id, email, org) and validate the token."""
+    base_url = normalize_url(base_url)
+    response = requests.get(
+        f"{base_url}/api/auth/me",
+        headers={**_BASE_HEADERS, "Authorization": f"Bearer {token}"},
+        timeout=_TIMEOUT,
+    )
+    return _unwrap(response)
+
+
+def logout_token(base_url: str, token: str) -> None:
+    """Best-effort revoke of a bearer token on the Praise side."""
+    try:
+        requests.post(
+            f"{base_url}/api/auth/logout",
+            headers={**_BASE_HEADERS, "Authorization": f"Bearer {token}"},
+            timeout=_TIMEOUT,
+        )
+    except requests.RequestException as exc:  # best-effort; the token will expire anyway
+        logger.info("praise token revoke failed (ignored): %s", exc)
+
+
 class PraiseSession:
-    """Authenticated context-managed session against praise."""
+    """Authenticated, context-managed session against Praise using a bearer token."""
 
-    def __init__(
-        self,
-        base_url: str,
-        email: str,
-        password: str,
-        session_path: Path | None = DEFAULT_SESSION_PATH,
-        state: SessionState | None = None,
-    ) -> None:
+    def __init__(self, base_url: str, token: str) -> None:
         self._base_url = normalize_url(base_url)
-        self._email = email
-        self._password = password
-        # session_path persists cookies to disk (CLI). state holds them in
-        # memory across instances (multi-tenant web server, see SessionState).
-        # When state is given it takes precedence and nothing touches disk.
-        self._session_path = session_path
-        self._state = state
+        self._token = token
         self._session: requests.Session | None = None
-
-    @property
-    def _meta_path(self) -> Path | None:
-        """File holding the cached build version, alongside the cookie file."""
-        return self._session_path.with_suffix(".meta") if self._session_path else None
 
     def __enter__(self) -> Self:
         self._session = requests.Session()
-        if not self._load_session():
-            self._fetch_build_version()
-            self._login()
-            self._save_session()
+        self._session.headers.update(_BASE_HEADERS)
+        self._session.headers["Authorization"] = f"Bearer {self._token}"
         return self
 
     def __exit__(
@@ -144,133 +219,6 @@ class PraiseSession:
         return data.get("locations", [])
 
     def _get_data(self, url: str, **kwargs: Any) -> Any:
-        response = self._get(url, **kwargs)
-        response.raise_for_status()
-        data = response.json()
-        if not data.get("success"):
-            code = data.get("error", {}).get("code", "unknown")
-            raise PraiseApiError(f"API error: {code}")
-        return data["data"]
-
-    def _get(self, url: str, **kwargs: Any) -> requests.Response:
-        """GET that transparently recovers once from a stale build version (426)
-        or a rejected session (401) by refreshing the relevant state and retrying."""
         kwargs.setdefault("timeout", _TIMEOUT)
         response = self.session.get(url, **kwargs)
-        if response.status_code == 426:
-            self._fetch_build_version()
-            self._save_build_version()
-            response = self.session.get(url, **kwargs)
-        if response.status_code == 401:
-            logger.info(
-                "praise session: cached cookie rejected (401), re-authenticating %s", self._email
-            )
-            self._login()
-            self._save_session()
-            response = self.session.get(url, **kwargs)
-        return response
-
-    def _fetch_build_version(self) -> None:
-        """Fetch the server's build version from /api/health (no version check
-        on that route) and set it as a default header for subsequent requests."""
-        response = self.session.get(f"{self._base_url}/api/health", timeout=_TIMEOUT)
-        response.raise_for_status()
-        version = response.json().get("version")
-        if version:
-            self.session.headers["X-Build-Version"] = version
-
-    def _login(self) -> None:
-        logger.info("praise session: minting new session via login for %s", self._email)
-        response = self.session.post(
-            f"{self._base_url}/api/auth/login",
-            json={"email": self._email, "password": self._password},
-            timeout=_TIMEOUT,
-        )
-        if response.status_code == 401:
-            raise InvalidPraiseLoginError("Praise rejected the credentials")
-        response.raise_for_status()
-        if not response.json().get("success"):
-            raise InvalidPraiseLoginError("Praise rejected the credentials")
-
-    def _load_session(self) -> bool:
-        """Load persisted cookies and build version. Returns True if a usable
-        session was restored. Missing/corrupt files mean a fresh login."""
-        if self._state is not None:
-            if len(self._state.cookies) == 0:
-                return False
-            self.session.cookies.update(self._state.cookies)
-            if self._state.build_version:
-                self.session.headers["X-Build-Version"] = self._state.build_version
-            else:
-                self._fetch_build_version()
-            logger.info("praise session: reused in-memory cookie for %s", self._email)
-            return True
-        if self._session_path is None or not self._session_path.is_file():
-            return False
-        jar = LWPCookieJar(str(self._session_path))
-        try:
-            jar.load(ignore_discard=True)
-        except (OSError, LoadError):
-            return False
-        if not len(jar):
-            return False
-        self.session.cookies.update(jar)
-
-        build_version = self._load_build_version()
-        if build_version:
-            self.session.headers["X-Build-Version"] = build_version
-        else:
-            self._fetch_build_version()
-        logger.info("praise session: reused on-disk cookie for %s", self._email)
-        return True
-
-    def _save_session(self) -> None:
-        """Persist the current cookies (0600) and build version."""
-        if self._state is not None:
-            self._state.cookies.clear()
-            self._state.cookies.update(self.session.cookies)
-            version = self.session.headers.get("X-Build-Version")
-            self._state.build_version = str(version) if version else None
-            return
-        if self._session_path is None:
-            return
-        self._session_path.parent.mkdir(parents=True, exist_ok=True)
-        jar = LWPCookieJar(str(self._session_path))
-        for cookie in self.session.cookies:
-            jar.set_cookie(cookie)
-        jar.save(ignore_discard=True)
-        self._session_path.chmod(0o600)
-        self._save_build_version()
-
-    def _load_build_version(self) -> str | None:
-        if self._meta_path is None:
-            return None
-        try:
-            return self._meta_path.read_text().strip() or None
-        except OSError:
-            return None
-
-    def _save_build_version(self) -> None:
-        if self._meta_path is None:
-            return
-        version = self.session.headers.get("X-Build-Version")
-        if not version:
-            return
-        self._meta_path.write_text(str(version))
-        self._meta_path.chmod(0o600)
-
-
-def verify_credentials(
-    base_url: str, email: str, password: str, state: SessionState | None = None
-) -> None:
-    """Validate credentials against Praise.
-
-    Raises ``InvalidPraiseLoginError`` if Praise rejects them, ``PraiseApiError``
-    or a network error if the server is unreachable. Used at login time to decide
-    whether to admit (and, on first login, register) a praison account.
-
-    Pass ``state`` to capture the cookie minted by the verification login so the
-    caller can reuse it instead of minting a second session on the first fetch.
-    """
-    with PraiseSession(base_url, email, password, session_path=None, state=state):
-        pass
+        return _unwrap(response)

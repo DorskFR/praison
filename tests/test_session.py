@@ -1,80 +1,132 @@
-"""Tests for Praise session cookie reuse.
+"""Tests for the Praise CLI device-flow client and bearer-token fetches."""
 
-Praise mints a new session on every login and evicts the oldest once a user
-exceeds its active-session cap, so the multi-tenant server must log in once per
-user and replay the cookie. These tests pin that behaviour.
-"""
+import pytest
 
-from praison.praise.session import (
-    PraiseSession,
-    SessionState,
-    dump_session_state,
-    load_session_state,
-)
+import praison.praise.session as session_mod
+from praison.errors import PraiseCliLoginError, PraiseTokenExpiredError
+from praison.praise.session import PraiseSession, fetch_me, poll_cli_token, start_cli_login
 
 
-class _FakePraise(PraiseSession):
-    """PraiseSession with the network stubbed: login just sets a cookie."""
+class _Resp:
+    """Minimal stand-in for a requests.Response."""
 
-    login_calls = 0
+    def __init__(self, payload: dict, status: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status
 
-    def _fetch_build_version(self) -> None:
-        self.session.headers["X-Build-Version"] = "v1"
-
-    def _login(self) -> None:
-        type(self).login_calls += 1
-        self.session.cookies.set("session_id", "tok")
+    def json(self) -> dict:
+        return self._payload
 
 
-def test_session_state_reuse_skips_relogin() -> None:
-    _FakePraise.login_calls = 0
-    state = SessionState()
-
-    # First use: no cookie yet -> one login, cookie + build version persisted.
-    with _FakePraise("praise.example", "e", "p", session_path=None, state=state):
-        pass
-    assert _FakePraise.login_calls == 1
-    assert len(state.cookies) == 1
-    assert state.build_version == "v1"
-
-    # Subsequent uses: cookie restored from state -> no further logins.
-    for _ in range(3):
-        with _FakePraise("praise.example", "e", "p", session_path=None, state=state):
-            pass
-    assert _FakePraise.login_calls == 1
+def _ok(data: dict) -> _Resp:
+    return _Resp({"success": True, "data": data})
 
 
-def test_without_state_logs_in_every_time() -> None:
-    _FakePraise.login_calls = 0
-    for _ in range(3):
-        with _FakePraise("praise.example", "e", "p", session_path=None):
-            pass
-    assert _FakePraise.login_calls == 3
+def _err(code: str, status: int = 400) -> _Resp:
+    return _Resp({"success": False, "error": {"code": code}}, status)
 
 
-def test_verify_credentials_captures_cookie_into_state(monkeypatch) -> None:
-    # At sign-in, the verification login must hand its minted cookie to the
-    # caller's state so the first fetch reuses it instead of minting a second
-    # Praise session (which evicts the user's oldest active session).
-    import praison.praise.session as session_mod
+class _FakeSession:
+    """Stand-in for requests.Session used by PraiseSession."""
 
-    monkeypatch.setattr(session_mod, "PraiseSession", _FakePraise)
-    _FakePraise.login_calls = 0
-    state = SessionState()
+    response: _Resp = _ok({"days": []})
 
-    session_mod.verify_credentials("praise.example", "e", "p", state=state)
+    def __init__(self) -> None:
+        self.headers: dict[str, str] = {}
+        self.closed = False
 
-    assert _FakePraise.login_calls == 1
-    assert len(state.cookies) == 1
-    assert state.build_version == "v1"
+    def get(self, url: str, **kwargs: object) -> _Resp:  # noqa: ARG002
+        return type(self).response
+
+    def close(self) -> None:
+        self.closed = True
 
 
-def test_session_state_survives_serialization() -> None:
-    # Persisting the session to the database (and restoring after a restart)
-    # must preserve the cookie and build version so no fresh login is needed.
-    state = SessionState(build_version="v1")
-    state.cookies.set("session_id", "tok")
+def test_start_cli_login_posts_and_parses(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
 
-    restored = load_session_state(dump_session_state(state))
-    assert restored.build_version == "v1"
-    assert restored.cookies.get("session_id") == "tok"
+    def fake_post(url: str, json: dict, headers: dict, timeout: int) -> _Resp:  # noqa: ARG001
+        captured["url"] = url
+        captured["headers"] = headers
+        return _ok(
+            {
+                "deviceCode": "dc",
+                "userCode": "ABCD1234",
+                "verificationUrl": "https://praise.example/cli/authorize",
+                "expiresAt": "2026-06-30T00:00:00Z",
+                "intervalSeconds": 5,
+            }
+        )
+
+    monkeypatch.setattr(session_mod.requests, "post", fake_post)
+    start = start_cli_login("praise.example")
+
+    assert start.base_url == "https://praise.example"
+    assert start.device_code == "dc"
+    assert start.user_code == "ABCD1234"
+    assert str(captured["url"]).endswith("/api/auth/cli/start")
+    assert "X-Praise-CLI-Version" in captured["headers"]  # type: ignore[operator]
+
+
+def test_poll_pending_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        session_mod.requests, "post", lambda *_a, **_k: _err("apiError.cliLoginPending")
+    )
+    assert poll_cli_token("praise.example", "dc") is None
+
+
+def test_poll_success_returns_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        session_mod.requests, "post", lambda *_a, **_k: _ok({"token": "prs_cli_abc"})
+    )
+    assert poll_cli_token("praise.example", "dc") == "prs_cli_abc"
+
+
+def test_poll_rejected_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        session_mod.requests, "post", lambda *_a, **_k: _err("apiError.cliLoginRejected")
+    )
+    with pytest.raises(PraiseCliLoginError):
+        poll_cli_token("praise.example", "dc")
+
+
+def test_fetch_me_sends_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_get(url: str, headers: dict, timeout: int) -> _Resp:  # noqa: ARG001
+        captured["headers"] = headers
+        return _ok({"id": "u1", "email": "a@b.com", "orgName": "Org"})
+
+    monkeypatch.setattr(session_mod.requests, "get", fake_get)
+    me = fetch_me("praise.example", "prs_cli_x")
+
+    assert me["email"] == "a@b.com"
+    assert captured["headers"]["Authorization"] == "Bearer prs_cli_x"  # type: ignore[index]
+
+
+def test_fetch_me_401_raises_token_expired(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(session_mod.requests, "get", lambda *_a, **_k: _Resp({}, 401))
+    with pytest.raises(PraiseTokenExpiredError):
+        fetch_me("praise.example", "bad")
+
+
+def test_praise_session_get_timesheet_uses_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeSession.response = _ok({"days": [], "summary": {}})
+    fake = _FakeSession()
+    monkeypatch.setattr(session_mod.requests, "Session", lambda: fake)
+
+    with PraiseSession("praise.example", "prs_cli_x") as praise:
+        data = praise.get_timesheet(2026, 6)
+
+    assert data == {"days": [], "summary": {}}
+    assert fake.headers["Authorization"] == "Bearer prs_cli_x"
+    assert "X-Praise-CLI-Version" in fake.headers
+    assert fake.closed
+
+
+def test_praise_session_401_raises_token_expired(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeSession.response = _Resp({}, 401)
+    monkeypatch.setattr(session_mod.requests, "Session", _FakeSession)
+
+    with PraiseSession("praise.example", "tok") as praise, pytest.raises(PraiseTokenExpiredError):
+        praise.get_clock_status()

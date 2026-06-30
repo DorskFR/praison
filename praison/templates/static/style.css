@@ -332,3 +332,12 @@ td.type { color: var(--dim); }
   table.month td.type { display: none; }
   td.note { max-width: 6rem; }
 }
+
+/* Device-flow login: the short user code the operator types into Praise. */
+.code {
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  text-align: center;
+  margin: 0.5rem 0 1rem;
+}

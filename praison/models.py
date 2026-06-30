@@ -29,11 +29,11 @@ class DayType(StrEnum):
 class User:
     """A registered praison account, keyed on a Praise (server, email) pair.
 
-    The Praise password is never stored server-side. It rides in the signed
-    session cookie (Fernet-encrypted) and is decrypted in memory only to replay
-    to the Praise server on each fetch. The user row exists purely for ownership
-    (which plans belong to whom) and per-user settings. There is no separate
-    praison password: the Praise credentials are the only proof of identity.
+    No Praise password is stored. The user authorizes praison via Praise's CLI
+    device flow, and the resulting ``prs_cli_`` bearer token is kept (encrypted)
+    per user in the ``praise_tokens`` table and replayed on each fetch. The user
+    row exists purely for ownership (which plans belong to whom) and per-user
+    settings. The Praise authorization is the only proof of identity.
     """
 
     id: str

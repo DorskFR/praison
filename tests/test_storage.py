@@ -81,18 +81,31 @@ def test_unpaid_leave_is_persisted(store: SqliteStore) -> None:
     assert plan.is_paid_leave is False
 
 
-def test_praise_session_round_trip_and_clear(store: SqliteStore) -> None:
+def test_praise_token_round_trip_and_clear(store: SqliteStore) -> None:
     user = store.create_user("https://p.example.com", "a@b.com", 8, 1.5)
-    assert store.get_praise_session(user.id) is None
+    assert store.get_praise_token(user.id) is None
 
-    store.save_praise_session(user.id, "encrypted-cookie-blob", "v1")
-    assert store.get_praise_session(user.id) == ("encrypted-cookie-blob", "v1")
+    store.save_praise_token(user.id, "encrypted-token-blob")
+    assert store.get_praise_token(user.id) == "encrypted-token-blob"
 
-    # Overwrite, then clear (as logout does).
-    store.save_praise_session(user.id, "blob2", None)
-    assert store.get_praise_session(user.id) == ("blob2", None)
-    store.delete_praise_session(user.id)
-    assert store.get_praise_session(user.id) is None
+    # Overwrite (re-auth), then clear (as logout does).
+    store.save_praise_token(user.id, "blob2")
+    assert store.get_praise_token(user.id) == "blob2"
+    store.delete_praise_token(user.id)
+    assert store.get_praise_token(user.id) is None
+
+
+def test_praise_tokens_are_per_user(store: SqliteStore) -> None:
+    alice = store.create_user("https://p.example.com", "alice@b.com", 8, 1.5)
+    bob = store.create_user("https://p.example.com", "bob@b.com", 8, 1.5)
+    store.save_praise_token(alice.id, "alice-token")
+    store.save_praise_token(bob.id, "bob-token")
+    assert store.get_praise_token(alice.id) == "alice-token"
+    assert store.get_praise_token(bob.id) == "bob-token"
+    # Re-authorizing one user does not touch the other.
+    store.delete_praise_token(alice.id)
+    assert store.get_praise_token(alice.id) is None
+    assert store.get_praise_token(bob.id) == "bob-token"
 
 
 def test_legacy_table_is_migrated_and_claimed(tmp_path: Path) -> None:

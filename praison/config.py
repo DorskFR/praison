@@ -15,11 +15,15 @@ DEFAULT_SESSION_PATH = DEFAULT_CONFIG_DIR / "session"
 
 @dataclass
 class Config:
-    """Praise authentication and rules configuration."""
+    """Legacy seed configuration: a Praise (server, email) identity + rules.
+
+    Only used to seed the first user row when migrating an old single-tenant
+    deployment. No password is involved -- the user authorizes via the device
+    flow on their first login.
+    """
 
     praise_url: str
     praise_email: str
-    praise_password: str
     hours_per_day: int = 8
     wfh_hours_per_business_day: float = 1.5
 
@@ -30,7 +34,6 @@ class Config:
             return cls(
                 praise_url=os.environ["PRAISE_URL"],
                 praise_email=os.environ["PRAISE_EMAIL"],
-                praise_password=os.environ["PRAISE_PASSWORD"],
                 hours_per_day=int(os.environ.get("PRAISE_HOURS_PER_DAY", "8")),
                 wfh_hours_per_business_day=float(
                     os.environ.get("PRAISON_WFH_HOURS_PER_BUSINESS_DAY", "1.5")
@@ -51,7 +54,6 @@ class Config:
         return cls(
             praise_url=section["url"],
             praise_email=section["email"],
-            praise_password=section["password"],
             hours_per_day=section.getint("hoursPerDay", fallback=8),
             wfh_hours_per_business_day=section.getfloat("wfhHoursPerBusinessDay", fallback=1.5),
         )
@@ -63,7 +65,6 @@ class Config:
         config["praise"] = {
             "url": self.praise_url,
             "email": self.praise_email,
-            "password": self.praise_password,
             "hoursPerDay": str(self.hours_per_day),
             "wfhHoursPerBusinessDay": str(self.wfh_hours_per_business_day),
         }
