@@ -1,8 +1,9 @@
 """Tests for the workplace rules calculator."""
 
-from datetime import date
+from datetime import date, timedelta
 
 from praison.calculator import (
+    _suggested_clockout,
     calculate_month_stats,
     generate_month_calendar,
     merge_actual_and_planned,
@@ -211,6 +212,54 @@ def test_leave_at_ignores_over_quota_wfh() -> None:
     stats, _ = calculate_month_stats(YEAR, MONTH, records, today=today)
     # Today's 8h WFH is over quota -> contributes nothing, so a full day is still owed.
     assert stats.suggested_clockout_time not in (None, "Done ✓")
+
+
+def test_leave_at_not_done_while_office_below_floor() -> None:
+    # Even when the running balance has banked enough to read "Done", the monthly
+    # office floor is a hard constraint WFH can never cover. With office still 1h02m
+    # below the 143h floor and no future office planned, leave-at must NOT be Done.
+    today = date(YEAR, MONTH, 30)
+    yesterday = today - timedelta(days=1)
+    # One synthetic prior day carrying all office done before today: 139h13m.
+    prior = DayRecord(
+        date=yesterday,
+        day_type=DayType.WORKING_DAY,
+        entries=[WorkEntry(WorkplaceType.OFFICE, None, None, Duration(8353), "Work")],
+    )
+    today_record = _work_day(30, office_minutes=165)  # today's 2h45m office -> 141h58m total
+    # Balance term alone would say "Done" (banked a full day ahead).
+    daily_balances = {yesterday: 480}
+    office_required_minutes = 143 * 60  # 8580
+    result = _suggested_clockout(
+        [prior, today_record],
+        daily_balances,
+        today,
+        hours_per_day=8,
+        total_wfh_quota_minutes=33 * 60,
+        office_required_minutes=office_required_minutes,
+    )
+    assert result not in (None, "Done ✓")  # ~1h02m of office still owed today
+
+
+def test_leave_at_done_when_office_floor_met() -> None:
+    # Same banked balance, but office already at the floor -> genuinely Done.
+    today = date(YEAR, MONTH, 30)
+    yesterday = today - timedelta(days=1)
+    prior = DayRecord(
+        date=yesterday,
+        day_type=DayType.WORKING_DAY,
+        entries=[WorkEntry(WorkplaceType.OFFICE, None, None, Duration(8580), "Work")],
+    )
+    today_record = _work_day(30, office_minutes=0)
+    result = _suggested_clockout(
+        [prior, today_record],
+        {yesterday: 480},
+        today,
+        hours_per_day=8,
+        total_wfh_quota_minutes=33 * 60,
+        office_required_minutes=143 * 60,
+    )
+    assert result == "Done ✓"
 
 
 def test_server_summary_discrepancy_flagged() -> None:

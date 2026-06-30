@@ -136,7 +136,12 @@ def calculate_month_stats(
     office_required_hours = max(0.0, total_required_hours - wfh_quota_hours)
 
     suggested_clockout_time = _suggested_clockout(
-        merged_records, daily_balances, today, hours_per_day, total_wfh_quota_minutes
+        merged_records,
+        daily_balances,
+        today,
+        hours_per_day,
+        total_wfh_quota_minutes,
+        office_required_minutes=int(office_required_hours * 60),
     )
 
     discrepancies = []
@@ -195,8 +200,17 @@ def _suggested_clockout(
     today: date,
     hours_per_day: int,
     total_wfh_quota_minutes: int,
+    office_required_minutes: int,
 ) -> str | None:
-    """Clock-out time today that lands the running balance at neutral."""
+    """Clock-out time today that satisfies BOTH the running balance and the office floor.
+
+    The running balance lets WFH (capped to quota) substitute for office on a daily
+    basis, so it can read neutral/positive while the *monthly* office requirement is
+    still unmet. Office is a hard floor that WFH can never cover, so the leave-at time
+    is the later of two constraints: the balance-neutral time, and the time needed to
+    clock enough office to reach the office floor (given office already done plus office
+    still planned on future days). Only when both are satisfied is it "Done".
+    """
     today_record = next((r for r in merged_records if r.date == today), None)
     if not today_record or today_record.day_type != DayType.WORKING_DAY:
         return None
@@ -213,7 +227,17 @@ def _suggested_clockout(
 
     capped_today_wfh = min(today_record.remote_minutes, remaining_quota_before_today)
     today_worked = today_record.office_minutes + capped_today_wfh
-    remaining_minutes = minutes_needed_today - today_worked
+    balance_remaining = minutes_needed_today - today_worked
+
+    # Office-floor constraint: WFH (over quota or not) can never count toward the office
+    # requirement, so any office shortfall not covered by future planned office must be
+    # clocked in office today, on top of what's already on the clock today.
+    office_outside_today = sum(r.office_minutes for r in merged_records if r.date != today)
+    office_floor_remaining = (
+        office_required_minutes - office_outside_today - today_record.office_minutes
+    )
+
+    remaining_minutes = max(balance_remaining, office_floor_remaining)
 
     if remaining_minutes <= 0:
         return "Done ✓"
