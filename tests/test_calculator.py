@@ -280,6 +280,47 @@ def test_leave_at_uses_server_summary_for_office_floor() -> None:
     )
 
 
+def test_leave_at_credits_open_office_session_to_floor() -> None:
+    # Exact prod scenario (2026-06): Praise's summary counts only closed sessions, so
+    # onSiteMinutes (8518) sits 62m below the 8580 floor -- but the user is clocked into
+    # the office right now and has been for 255m. Praise's dashboard live-counts that
+    # (on-site 146:13 = 8773) and shows Done. We must credit the open session the same
+    # way, else we contradict Praise by reporting a phantom office deficit.
+    today = date(YEAR, MONTH, 30)
+    yesterday = today - timedelta(days=1)
+    prior = DayRecord(
+        date=yesterday,
+        day_type=DayType.WORKING_DAY,
+        entries=[WorkEntry(WorkplaceType.OFFICE, None, None, Duration(8600), "Work")],
+    )
+    today_record = _work_day(30)  # open session not yet in the local record
+    summary = ServerSummary(required_on_site_minutes=8580, on_site_minutes=8518)
+    # Without crediting the live session: phantom 62m office deficit -> NOT Done.
+    assert _suggested_clockout(
+        [prior, today_record],
+        {yesterday: 480},
+        today,
+        hours_per_day=8,
+        total_wfh_quota_minutes=33 * 60,
+        office_required_minutes=8580,
+        server_summary=summary,
+    ) not in (None, "Done ✓")
+    # Crediting the 255m open office session clears the floor (8518 + 255 = 8773) -> Done.
+    assert (
+        _suggested_clockout(
+            [prior, today_record],
+            {yesterday: 480},
+            today,
+            hours_per_day=8,
+            total_wfh_quota_minutes=33 * 60,
+            office_required_minutes=8580,
+            server_summary=summary,
+            live_office_minutes=255,
+        )
+        == "Done ✓"
+    )
+
+
 def test_leave_at_done_when_office_floor_met() -> None:
     # Same banked balance, but office already at the floor -> genuinely Done.
     today = date(YEAR, MONTH, 30)

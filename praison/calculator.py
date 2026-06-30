@@ -37,6 +37,8 @@ def calculate_month_stats(
     wfh_hours_per_day: float = DEFAULT_WFH_HOURS_PER_DAY,
     server_summary: ServerSummary | None = None,
     planned_days: list[PlannedDay] | None = None,
+    live_office_minutes: int = 0,
+    live_remote_minutes: int = 0,
 ) -> tuple[MonthStats, dict[date, int]]:
     """
     Calculate monthly statistics from merged records (actual + planned + auto-defaults).
@@ -143,6 +145,8 @@ def calculate_month_stats(
         total_wfh_quota_minutes,
         office_required_minutes=int(office_required_hours * 60),
         server_summary=server_summary,
+        live_office_minutes=live_office_minutes,
+        live_remote_minutes=live_remote_minutes,
     )
 
     discrepancies = []
@@ -203,6 +207,8 @@ def _suggested_clockout(
     total_wfh_quota_minutes: int,
     office_required_minutes: int,
     server_summary: ServerSummary | None = None,
+    live_office_minutes: int = 0,
+    live_remote_minutes: int = 0,
 ) -> str | None:
     """Clock-out time today that satisfies BOTH the running balance and the office floor.
 
@@ -218,6 +224,12 @@ def _suggested_clockout(
     numbers shown to the user and the source of truth for actuals; the local
     reconstruction can diverge from them. Only future planned office (which the summary,
     being actuals-only, doesn't include) is added from the local merge.
+
+    `live_office_minutes`/`live_remote_minutes` are the elapsed minutes of a session you
+    are *currently clocked into*. Praise's summary counts only closed sessions, so those
+    minutes are missing from `on_site_minutes`/`remote_minutes` until you clock out —
+    but they are real work happening now, so we credit them to today's worked total and
+    to the office floor, matching Praise's own live dashboard.
     """
     today_record = next((r for r in merged_records if r.date == today), None)
     if not today_record or today_record.day_type != DayType.WORKING_DAY:
@@ -233,8 +245,10 @@ def _suggested_clockout(
             break
         remaining_quota_before_today = max(0, remaining_quota_before_today - record.remote_minutes)
 
-    capped_today_wfh = min(today_record.remote_minutes, remaining_quota_before_today)
-    today_worked = today_record.office_minutes + capped_today_wfh
+    capped_today_wfh = min(
+        today_record.remote_minutes + live_remote_minutes, remaining_quota_before_today
+    )
+    today_worked = today_record.office_minutes + live_office_minutes + capped_today_wfh
     balance_remaining = minutes_needed_today - today_worked
 
     # Office-floor constraint: WFH (over quota or not) can never count toward the office
@@ -243,11 +257,13 @@ def _suggested_clockout(
     if server_summary is not None and server_summary.required_on_site_minutes:
         # Authoritative: office already done (incl. today) per Praise's summary, plus
         # office still planned on future days (the summary is actuals-only).
-        office_done = server_summary.on_site_minutes
+        office_done = server_summary.on_site_minutes + live_office_minutes
         future_planned_office = sum(r.office_minutes for r in merged_records if r.date > today)
         office_required = server_summary.required_on_site_minutes
     else:
-        office_done = sum(r.office_minutes for r in merged_records if r.date <= today)
+        office_done = (
+            sum(r.office_minutes for r in merged_records if r.date <= today) + live_office_minutes
+        )
         future_planned_office = sum(r.office_minutes for r in merged_records if r.date > today)
         office_required = office_required_minutes
     office_floor_remaining = office_required - office_done - future_planned_office

@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from praison.models import DayType, WorkplaceType
 from praison.parser import (
     build_location_categories,
+    parse_open_session,
     parse_summary,
     parse_timesheet,
     parse_timezone,
@@ -105,3 +106,37 @@ def test_build_location_categories() -> None:
     ]
     categories = build_location_categories(locations)
     assert categories == {"a": "on_site", "b": "remote", "c": "on_site"}
+
+
+def test_parse_open_session_on_site() -> None:
+    categories = {"loc-1": "on_site", "loc-2": "remote"}
+    status = {
+        "isClockedIn": True,
+        "lastEvent": {
+            "type": "clock_in",
+            "timestamp": "2026-06-29T22:18:01.779Z",
+            "locationId": "loc-1",
+        },
+    }
+    result = parse_open_session(status, categories)
+    assert result is not None
+    category, started_at = result
+    assert category == "on_site"
+    assert started_at == datetime(2026, 6, 29, 22, 18, 1, 779000, tzinfo=ZoneInfo("UTC"))
+
+
+def test_parse_open_session_unknown_location_defaults_on_site() -> None:
+    status = {
+        "isClockedIn": True,
+        "lastEvent": {"type": "clock_in", "timestamp": "2026-06-29T22:18:01Z", "locationId": "x"},
+    }
+    result = parse_open_session(status, {})
+    assert result is not None
+    assert result[0] == "on_site"
+
+
+def test_parse_open_session_none_when_not_clocked_in() -> None:
+    assert parse_open_session({"isClockedIn": False}, {}) is None
+    assert parse_open_session(None, {}) is None
+    on_break = {"isClockedIn": True, "lastEvent": {"type": "break_start"}}
+    assert parse_open_session(on_break, {}) is None
