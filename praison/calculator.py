@@ -142,6 +142,7 @@ def calculate_month_stats(
         hours_per_day,
         total_wfh_quota_minutes,
         office_required_minutes=int(office_required_hours * 60),
+        server_summary=server_summary,
     )
 
     discrepancies = []
@@ -201,6 +202,7 @@ def _suggested_clockout(
     hours_per_day: int,
     total_wfh_quota_minutes: int,
     office_required_minutes: int,
+    server_summary: ServerSummary | None = None,
 ) -> str | None:
     """Clock-out time today that satisfies BOTH the running balance and the office floor.
 
@@ -210,6 +212,12 @@ def _suggested_clockout(
     is the later of two constraints: the balance-neutral time, and the time needed to
     clock enough office to reach the office floor (given office already done plus office
     still planned on future days). Only when both are satisfied is it "Done".
+
+    The office floor is measured against Praise's authoritative server summary
+    (`on_site_minutes` vs `required_on_site_minutes`) when available — those are the
+    numbers shown to the user and the source of truth for actuals; the local
+    reconstruction can diverge from them. Only future planned office (which the summary,
+    being actuals-only, doesn't include) is added from the local merge.
     """
     today_record = next((r for r in merged_records if r.date == today), None)
     if not today_record or today_record.day_type != DayType.WORKING_DAY:
@@ -231,11 +239,18 @@ def _suggested_clockout(
 
     # Office-floor constraint: WFH (over quota or not) can never count toward the office
     # requirement, so any office shortfall not covered by future planned office must be
-    # clocked in office today, on top of what's already on the clock today.
-    office_outside_today = sum(r.office_minutes for r in merged_records if r.date != today)
-    office_floor_remaining = (
-        office_required_minutes - office_outside_today - today_record.office_minutes
-    )
+    # clocked in office today.
+    if server_summary is not None and server_summary.required_on_site_minutes:
+        # Authoritative: office already done (incl. today) per Praise's summary, plus
+        # office still planned on future days (the summary is actuals-only).
+        office_done = server_summary.on_site_minutes
+        future_planned_office = sum(r.office_minutes for r in merged_records if r.date > today)
+        office_required = server_summary.required_on_site_minutes
+    else:
+        office_done = sum(r.office_minutes for r in merged_records if r.date <= today)
+        future_planned_office = sum(r.office_minutes for r in merged_records if r.date > today)
+        office_required = office_required_minutes
+    office_floor_remaining = office_required - office_done - future_planned_office
 
     remaining_minutes = max(balance_remaining, office_floor_remaining)
 
