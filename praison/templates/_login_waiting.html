@@ -1,0 +1,14 @@
+<div class="card">
+  <h1>praison</h1>
+  <p class="meta">Authorize praison in Praise to finish signing in.</p>
+  <p>1. Open <a href="{{ verification_url }}" target="_blank" rel="noopener">{{ verification_url }}</a></p>
+  <p>2. Enter this code when prompted:</p>
+  <p class="code">{{ user_code }}</p>
+  <div id="cli-wait"
+       hx-get="/login/poll"
+       hx-trigger="every {{ interval }}s"
+       hx-target="#card"
+       hx-swap="innerHTML">
+    <p class="meta">Waiting for approval…</p>
+  </div>
+</div>

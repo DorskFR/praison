@@ -1,11 +1,11 @@
 """Storage: Postgres when DB_HOST is set, SQLite otherwise.
 
 Multi-tenant: every user is a row in ``users`` (keyed on a Praise server + email
-pair) and every planned day is scoped to a ``user_id``. The Praise password is
-never stored here -- it lives only in the user's session cookie -- so the user
-row exists purely for ownership and per-user settings. Legacy single-tenant rows
-(no ``user_id``) are migrated to a ``'legacy'`` placeholder and claimed by the
-seeded user on startup.
+pair) and every planned day is scoped to a ``user_id``. No Praise password is
+stored -- each user authorizes praison once via Praise's CLI device flow, and the
+resulting ``prs_cli_`` bearer token is kept (encrypted) per user in
+``praise_tokens``. Legacy single-tenant rows (no ``user_id``) are migrated to a
+``'legacy'`` placeholder and claimed by the seeded user on startup.
 """
 
 import os
@@ -84,13 +84,11 @@ class Store(Protocol):
 
     def claim_legacy_plans(self, user_id: str) -> None: ...
 
-    def get_praise_session(self, user_id: str) -> tuple[str, str | None] | None: ...
+    def get_praise_token(self, user_id: str) -> str | None: ...
 
-    def save_praise_session(
-        self, user_id: str, cookies: str, build_version: str | None
-    ) -> None: ...
+    def save_praise_token(self, user_id: str, token: str) -> None: ...
 
-    def delete_praise_session(self, user_id: str) -> None: ...
+    def delete_praise_token(self, user_id: str) -> None: ...
 
     def save_planned_day(self, user_id: str, planned: PlannedDay) -> None: ...
 
@@ -141,13 +139,14 @@ _PLANNED_SQLITE = """
     )
 """
 
-# Per-user Praise session, persisted so a pod restart reuses the cookie instead
-# of minting a fresh login (which evicts the user's real browser sessions).
-_SESSIONS_SQLITE = """
-    CREATE TABLE IF NOT EXISTS praise_sessions (
+# Per-user Praise bearer token (CLI device-flow, ``prs_cli_``), encrypted at rest.
+# Keyed per user -- never a single instance-wide token. A missing row means the
+# user must (re-)authorize via the device flow.
+_TOKENS_SQLITE = """
+    CREATE TABLE IF NOT EXISTS praise_tokens (
         user_id TEXT PRIMARY KEY,
-        cookies TEXT NOT NULL,
-        build_version TEXT
+        token TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
 """
 
@@ -163,8 +162,8 @@ class SqliteStore:
     def _init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(_USERS_SQLITE)
-            # Drop the now-unused password column: the Praise password lives in
-            # the session cookie, never at rest. (SQLite >= 3.35 supports this.)
+            # Drop the long-unused password column: praison stores no Praise
+            # password at all (auth is a device-flow token). (SQLite >= 3.35.)
             user_cols = [row[1] for row in conn.execute("PRAGMA table_info(users)")]
             if "encrypted_password" in user_cols:
                 conn.execute("ALTER TABLE users DROP COLUMN encrypted_password")
@@ -186,7 +185,10 @@ class SqliteStore:
                 conn.execute(
                     "ALTER TABLE planned_days ADD COLUMN is_unpaid_leave INTEGER NOT NULL DEFAULT 0"
                 )
-            conn.execute(_SESSIONS_SQLITE)
+            # The cookie-based session store is obsolete (Praise dropped password
+            # login); drop it. Tokens replace it.
+            conn.execute("DROP TABLE IF EXISTS praise_sessions")
+            conn.execute(_TOKENS_SQLITE)
             conn.commit()
 
     def create_user(
@@ -280,27 +282,27 @@ class SqliteStore:
             )
             conn.commit()
 
-    def get_praise_session(self, user_id: str) -> tuple[str, str | None] | None:
+    def get_praise_token(self, user_id: str) -> str | None:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                "SELECT cookies, build_version FROM praise_sessions WHERE user_id = ?",
+                "SELECT token FROM praise_tokens WHERE user_id = ?",
                 (user_id,),
             )
             row = cursor.fetchone()
-            return (row[0], row[1]) if row else None
+            return row[0] if row else None
 
-    def save_praise_session(self, user_id: str, cookies: str, build_version: str | None) -> None:
+    def save_praise_token(self, user_id: str, token: str) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO praise_sessions (user_id, cookies, build_version) "
-                "VALUES (?, ?, ?)",
-                (user_id, cookies, build_version),
+                "INSERT OR REPLACE INTO praise_tokens (user_id, token, updated_at) "
+                "VALUES (?, ?, datetime('now'))",
+                (user_id, token),
             )
             conn.commit()
 
-    def delete_praise_session(self, user_id: str) -> None:
+    def delete_praise_token(self, user_id: str) -> None:
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM praise_sessions WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM praise_tokens WHERE user_id = ?", (user_id,))
             conn.commit()
 
     def get_planned_day(self, user_id: str, target_date: date) -> PlannedDay | None:
@@ -358,11 +360,11 @@ _PLANNED_PG = """
     )
 """
 
-_SESSIONS_PG = """
-    CREATE TABLE IF NOT EXISTS praise_sessions (
+_TOKENS_PG = """
+    CREATE TABLE IF NOT EXISTS praise_tokens (
         user_id TEXT PRIMARY KEY,
-        cookies TEXT NOT NULL,
-        build_version TEXT
+        token TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
 """
 
@@ -381,8 +383,8 @@ class PostgresStore:
     def _init_db(self) -> None:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(_USERS_PG)
-            # Drop the now-unused password column: the Praise password lives in
-            # the session cookie, never at rest.
+            # Drop the long-unused password column: praison stores no Praise
+            # password at all (auth is a device-flow token).
             cur.execute("ALTER TABLE users DROP COLUMN IF EXISTS encrypted_password")
             cur.execute(
                 "SELECT column_name FROM information_schema.columns "
@@ -405,7 +407,8 @@ class PostgresStore:
                 "ALTER TABLE planned_days ADD COLUMN IF NOT EXISTS "
                 "is_unpaid_leave BOOLEAN NOT NULL DEFAULT FALSE"
             )
-            cur.execute(_SESSIONS_PG)
+            cur.execute("DROP TABLE IF EXISTS praise_sessions")
+            cur.execute(_TOKENS_PG)
             conn.commit()
 
     def create_user(
@@ -535,27 +538,27 @@ class PostgresStore:
             )
             conn.commit()
 
-    def get_praise_session(self, user_id: str) -> tuple[str, str | None] | None:
+    def get_praise_token(self, user_id: str) -> str | None:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT cookies, build_version FROM praise_sessions WHERE user_id = %s",
+                "SELECT token FROM praise_tokens WHERE user_id = %s",
                 (user_id,),
             )
             row = cur.fetchone()
-            return (row[0], row[1]) if row else None
+            return row[0] if row else None
 
-    def save_praise_session(self, user_id: str, cookies: str, build_version: str | None) -> None:
+    def save_praise_token(self, user_id: str, token: str) -> None:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO praise_sessions (user_id, cookies, build_version) "
-                "VALUES (%s, %s, %s) "
+                "INSERT INTO praise_tokens (user_id, token, updated_at) "
+                "VALUES (%s, %s, now()) "
                 "ON CONFLICT (user_id) DO UPDATE SET "
-                "cookies = EXCLUDED.cookies, build_version = EXCLUDED.build_version",
-                (user_id, cookies, build_version),
+                "token = EXCLUDED.token, updated_at = EXCLUDED.updated_at",
+                (user_id, token),
             )
             conn.commit()
 
-    def delete_praise_session(self, user_id: str) -> None:
+    def delete_praise_token(self, user_id: str) -> None:
         with self._connect() as conn, conn.cursor() as cur:
-            cur.execute("DELETE FROM praise_sessions WHERE user_id = %s", (user_id,))
+            cur.execute("DELETE FROM praise_tokens WHERE user_id = %s", (user_id,))
             conn.commit()

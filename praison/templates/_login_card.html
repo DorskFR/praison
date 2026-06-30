@@ -1,0 +1,16 @@
+<div class="card">
+  <h1>praison</h1>
+  {% if reauth %}
+  <p class="meta">Your Praise authorization expired — reconnect to continue.</p>
+  {% else %}
+  <p class="meta">Sign in by authorizing praison in your Praise account.</p>
+  {% endif %}
+  {% if error %}<p class="banner error">⚠ {{ error }}</p>{% endif %}
+  <form hx-post="/login/start" hx-target="#card" hx-swap="innerHTML">
+    <label class="field">Praise URL
+      <input type="text" name="praise_url" placeholder="praise.example.com"
+             value="{{ prefill_url or '' }}" autocomplete="url" required>
+    </label>
+    <button class="btn btn-primary" type="submit">Continue</button>
+  </form>
+</div>

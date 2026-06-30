@@ -6,7 +6,6 @@ seeded as the first user on startup (used to migrate the previous single-tenant
 deployment; new users just log in through the web form).
 """
 
-import getpass
 import logging
 import os
 import sys
@@ -30,7 +29,6 @@ def configure() -> Config:
     sys.stdout.write("Praise email: ")
     sys.stdout.flush()
     email = input().strip()
-    password = getpass.getpass("Praise password: ")
     sys.stdout.write("Hours per day [8]: ")
     sys.stdout.flush()
     hours = int(input().strip() or "8")
@@ -40,7 +38,6 @@ def configure() -> Config:
     config = Config(
         praise_url=url,
         praise_email=email,
-        praise_password=password,
         hours_per_day=hours,
         wfh_hours_per_business_day=wfh,
     )
@@ -57,9 +54,8 @@ def _seed_legacy_user(db: Store) -> None:
     url = normalize_url(config.praise_url)
     if db.get_user_by_identity(url, config.praise_email):
         return
-    # No password is stored: the seed only establishes the ownership row and
-    # claims orphaned plans. The user supplies their password at login, where it
-    # is kept in the session cookie only.
+    # The seed only establishes the ownership row and claims orphaned plans. The
+    # user authorizes praison via Praise's device flow on their first login.
     user = db.create_user(
         url,
         config.praise_email,
