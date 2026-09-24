@@ -1,5 +1,7 @@
 """Tests for the Praise CLI device-flow client and bearer-token fetches."""
 
+import re
+
 import pytest
 
 import praison.praise.session as session_mod
@@ -65,7 +67,8 @@ def test_start_cli_login_posts_and_parses(monkeypatch: pytest.MonkeyPatch) -> No
     assert start.device_code == "dc"
     assert start.user_code == "ABCD1234"
     assert str(captured["url"]).endswith("/api/auth/cli/start")
-    assert "X-Praise-CLI-Version" in captured["headers"]  # type: ignore[operator]
+    cli_version = captured["headers"]["X-Praise-CLI-Version"]  # type: ignore[index]
+    assert re.fullmatch(r"[1-9]\d?\.\d+\.\d+", cli_version), "Praise rejects CalVer; send semver"
 
 
 def test_poll_pending_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
