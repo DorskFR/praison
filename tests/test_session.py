@@ -133,3 +133,14 @@ def test_praise_session_401_raises_token_expired(monkeypatch: pytest.MonkeyPatch
 
     with PraiseSession("praise.example", "tok") as praise, pytest.raises(PraiseTokenExpiredError):
         praise.get_clock_status()
+
+
+def test_force_ipv4_restricts_resolution_to_ipv4(monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket
+
+    import urllib3.util.connection as conn
+
+    monkeypatch.setattr(conn, "HAS_IPV6", True)
+    assert conn.allowed_gai_family() == socket.AF_UNSPEC
+    session_mod.force_ipv4()
+    assert conn.allowed_gai_family() == socket.AF_INET

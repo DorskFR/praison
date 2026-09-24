@@ -23,6 +23,7 @@ from types import TracebackType
 from typing import Any, Self
 
 import requests
+import urllib3.util.connection
 
 from praison.errors import PraiseApiError, PraiseCliLoginError, PraiseTokenExpiredError
 
@@ -38,6 +39,11 @@ CLI_TOKEN_PREFIX = "prs_cli_"  # noqa: S105 - token format marker, not a secret
 # Bump it if Praise raises its minimum supported CLI version.
 _CLI_VERSION = "1.0.0"
 _BASE_HEADERS = {"X-Praise-CLI-Version": _CLI_VERSION}
+
+
+def force_ipv4() -> None:
+    """Resolve Praise over IPv4 only, for hosts without a working IPv6 route."""
+    urllib3.util.connection.HAS_IPV6 = False
 
 
 def normalize_url(base_url: str) -> str:

@@ -14,7 +14,7 @@ import uvicorn
 
 from praison.config import Config
 from praison.database import Store, create_database
-from praison.praise.session import normalize_url
+from praison.praise.session import force_ipv4, normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,9 @@ def main() -> None:
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+
+    if os.environ.get("PRAISON_FORCE_IPV4", "").strip().lower() in ("1", "true", "yes"):
+        force_ipv4()
 
     from praison.app import create_app
 
