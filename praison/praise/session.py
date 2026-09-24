@@ -34,9 +34,9 @@ CLI_TOKEN_PREFIX = "prs_cli_"  # noqa: S105 - token format marker, not a secret
 
 # Sent as ``X-Praise-CLI-Version`` on every request. Its presence makes Praise's
 # versionCheck middleware skip the exact web build-version match; cliVersionCheck
-# then only rejects it if it is *below* the server's CLI_MIN_VERSION. Keep this at
-# a recent CalVer; bump it if Praise raises its minimum supported CLI version.
-_CLI_VERSION = "2026.6.30"
+# then only rejects it if it is not a semver at or above the server's CLI_MIN_VERSION.
+# Bump it if Praise raises its minimum supported CLI version.
+_CLI_VERSION = "1.0.0"
 _BASE_HEADERS = {"X-Praise-CLI-Version": _CLI_VERSION}
 
 
